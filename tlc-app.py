@@ -45,36 +45,49 @@ def get_sheets_service():
 def save_uploaded_file_to_drive(uploaded_file, prefix):
     """
     Sube el archivo a Google Drive y devuelve el enlace público.
+    Si algo falla, muestra el error en pantalla y devuelve None.
     """
     if uploaded_file is None:
         return None
 
-    service = get_drive_service()
+    try:
+        service = get_drive_service()
 
-    file_metadata = {
-        "name": f"{prefix}_{uploaded_file.name}",
-    }
-    if DRIVE_FOLDER_ID:
-        file_metadata["parents"] = [DRIVE_FOLDER_ID]
+        file_metadata = {
+            "name": f"{prefix}_{uploaded_file.name}",
+        }
+        # Solo agregamos carpeta si DRIVE_FOLDER_ID está bien definido
+        if DRIVE_FOLDER_ID:
+            file_metadata["parents"] = [DRIVE_FOLDER_ID]
 
-    file_stream = io.BytesIO(uploaded_file.getbuffer())
-    media = MediaIoBaseUpload(file_stream, mimetype=uploaded_file.type, resumable=True)
+        file_stream = io.BytesIO(uploaded_file.getbuffer())
+        media = MediaIoBaseUpload(
+            file_stream,
+            mimetype=uploaded_file.type or "application/octet-stream",
+            resumable=False,   # usamos upload simple, menos problema con errores raros
+        )
 
-    created = service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields="id",
-    ).execute()
+        created = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id",
+        ).execute()
 
-    file_id = created.get("id")
+        file_id = created.get("id")
 
-    # Dar acceso de lectura por link
-    service.permissions().create(
-        fileId=file_id,
-        body={"role": "reader", "type": "anyone"},
-    ).execute()
+        # Dar acceso de lectura por link
+        service.permissions().create(
+            fileId=file_id,
+            body={"role": "reader", "type": "anyone"},
+        ).execute()
 
-    return f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+        return f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+
+    except Exception as e:
+        st.error(f"Error al subir el archivo a Google Drive. Revisa configuración de carpeta y permisos.")
+        # Si quieres ver más detalle en los logs de Streamlit:
+        st.write("Detalle técnico (solo visible para admin):", str(e))
+        return None
 
 
 def append_loan_to_sheet(
