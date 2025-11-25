@@ -2,24 +2,22 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import date
-import io
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 
 DB_NAME = "lemonade_cash.db"
 
-# ======== CONFIG GCP (Drive + Sheets) ========
+# ======== CONFIG GCP (SOLO Sheets, Drive desactivado) ========
 
 SCOPES = [
-    "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
+    # "https://www.googleapis.com/auth/drive.file",  # reservado para futuro
 ]
 
 # IDs desde Streamlit secrets
 SPREADSHEET_ID = st.secrets.get("SPREADSHEET_ID", "")
-DRIVE_FOLDER_ID = st.secrets.get("DRIVE_FOLDER_ID", "")
+# DRIVE_FOLDER_ID = st.secrets.get("DRIVE_FOLDER_ID", "")  # no se usa por limitación de cuota
 
 
 def get_gcp_credentials():
@@ -31,63 +29,9 @@ def get_gcp_credentials():
 
 
 @st.cache_resource
-def get_drive_service():
-    creds = get_gcp_credentials()
-    return build("drive", "v3", credentials=creds)
-
-
-@st.cache_resource
 def get_sheets_service():
     creds = get_gcp_credentials()
     return build("sheets", "v4", credentials=creds)
-
-
-def save_uploaded_file_to_drive(uploaded_file, prefix):
-    """
-    Sube el archivo a Google Drive y devuelve el enlace público.
-    Si algo falla, muestra el error en pantalla y devuelve None.
-    """
-    if uploaded_file is None:
-        return None
-
-    try:
-        service = get_drive_service()
-
-        file_metadata = {
-            "name": f"{prefix}_{uploaded_file.name}",
-        }
-        # Solo agregamos carpeta si DRIVE_FOLDER_ID está bien definido
-        if DRIVE_FOLDER_ID:
-            file_metadata["parents"] = [DRIVE_FOLDER_ID]
-
-        file_stream = io.BytesIO(uploaded_file.getbuffer())
-        media = MediaIoBaseUpload(
-            file_stream,
-            mimetype=uploaded_file.type or "application/octet-stream",
-            resumable=False,   # usamos upload simple, menos problema con errores raros
-        )
-
-        created = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id",
-        ).execute()
-
-        file_id = created.get("id")
-
-        # Dar acceso de lectura por link
-        service.permissions().create(
-            fileId=file_id,
-            body={"role": "reader", "type": "anyone"},
-        ).execute()
-
-        return f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
-
-    except Exception as e:
-        st.error(f"Error al subir el archivo a Google Drive. Revisa configuración de carpeta y permisos.")
-        # Si quieres ver más detalle en los logs de Streamlit:
-        st.write("Detalle técnico (solo visible para admin):", str(e))
-        return None
 
 
 def append_loan_to_sheet(
@@ -151,6 +95,27 @@ def append_loan_to_sheet(
     ).execute()
 
 
+def save_uploaded_file_to_drive(uploaded_file, prefix):
+    """
+    Stub actual: NO sube a Google Drive porque las Service Accounts
+    sin unidad compartida no tienen cuota de almacenamiento.
+
+    Mantiene la interfaz (no rompe la app) y devuelve None.
+    En el futuro, cuando uses una Unidad Compartida de Workspace,
+    aquí reactivamos el código de subida.
+    """
+    if uploaded_file is None:
+        return None
+
+    st.warning(
+        "Nota: el archivo se recibió, pero no se está subiendo a Google Drive "
+        "porque la Service Account no tiene cuota de almacenamiento. "
+        "Más adelante se puede activar usando una Unidad Compartida de Workspace."
+    )
+
+    return None
+
+
 # ========= BASE DE DATOS (SQLite) =========
 
 def get_connection():
@@ -161,6 +126,7 @@ def init_db():
     with get_connection() as conn:
         cursor = conn.cursor()
 
+        # Crear tablas si no existen
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS clients (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,6 +170,25 @@ def init_db():
             FOREIGN KEY(loan_id) REFERENCES loans(id)
         );
         """)
+
+        # ---- MIGRACIÓN: asegurar columnas nuevas en clients ----
+        cursor.execute("PRAGMA table_info(clients);")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+
+        columnas_necesarias = [
+            ("domicilio_path", "TEXT"),
+            ("id_path", "TEXT"),
+            ("has_12m_job", "INTEGER"),
+            ("is_recommended", "INTEGER"),
+            ("can_pay_weekly", "INTEGER"),
+            ("accepts_terms", "INTEGER"),
+        ]
+
+        for col_name, col_type in columnas_necesarias:
+            if col_name not in existing_cols:
+                cursor.execute(
+                    f"ALTER TABLE clients ADD COLUMN {col_name} {col_type};"
+                )
 
         conn.commit()
 
@@ -497,7 +482,7 @@ def page_registrar_credito():
                 st.error("Debes capturar al menos el teléfono del cliente.")
                 return
 
-            # Subir documentos a Drive
+            # Stub: no se sube a Drive, pero mantenemos la lógica
             domicilio_url = save_uploaded_file_to_drive(
                 domicilio_file, f"{phone}_domicilio"
             )
