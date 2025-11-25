@@ -54,10 +54,56 @@ def append_loan_to_sheet(
 ):
     """
     Agrega una fila a Google Sheets con datos del crédito.
+    Lee SPREADSHEET_ID directamente de st.secrets en cada llamada
+    (para evitar problemas si cambian los secrets).
     """
-    if not SPREADSHEET_ID:
-        st.warning("SPREADSHEET_ID no está configurado en secrets. No se registró en Google Sheets.")
+
+    # 🔍 Leemos el valor REAL desde secrets
+    spreadsheet_id = st.secrets.get("SPREADSHEET_ID", "")
+
+    if not spreadsheet_id:
+        # Debug útil para ver qué ve realmente la app
+        st.warning(
+            f"SPREADSHEET_ID no está configurado en secrets. "
+            f"Valor leído: {repr(spreadsheet_id)} | "
+            f"Keys disponibles: {list(st.secrets.keys())}"
+        )
         return
+
+    service = get_sheets_service()
+
+    def yes_no(v):
+        return "SI" if v else "NO"
+
+    values = [[
+        str(date.today()),               # Fecha de registro en el sistema
+        loan_id,                         # ID interno
+        loan_date.isoformat(),           # Fecha del préstamo
+        full_name,
+        phone,
+        address,
+        emergency_name,
+        emergency_phone,
+        yes_no(has_12m_job),
+        yes_no(is_recommended),
+        yes_no(can_pay_weekly),
+        yes_no(accepts_terms),
+        float(principal),
+        float(total_to_pay),
+        float(weekly_payment),
+        domicilio_url or "",
+        id_url or "",
+    ]]
+
+    body = {"values": values}
+
+    service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range="Prestamos!A1",
+        valueInputOption="USER_ENTERED",
+        insertDataOption="INSERT_ROWS",
+        body=body,
+    ).execute()
 
     service = get_sheets_service()
 
