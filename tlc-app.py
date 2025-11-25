@@ -1,14 +1,3 @@
-st.subheader("Documentos")
-domicilio_file = st.file_uploader(
-    "Comprobante de domicilio (foto)",
-    type=["png", "jpg", "jpeg"],
-    key="domicilio",
-)
-id_file = st.file_uploader(
-    "Identificación oficial (foto)",
-    type=["png", "jpg", "jpeg"],
-    key="id_file",
-)
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -380,4 +369,14 @@ def main():
 
 if __name__ == "__main__":
     main()
-
+st.subheader("Documentos")
+domicilio_file = st.file_uploader(
+    "Comprobante de domicilio (foto)",
+    type=["png", "jpg", "jpeg"],
+    key="domicilio",
+)
+id_file = st.file_uploader(
+    "Identificación oficial (foto)",
+    type=["png", "jpg", "jpeg"],
+    key="id_file",
+)
