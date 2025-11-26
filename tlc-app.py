@@ -774,8 +774,8 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
 
 # ================== UI HELPERS: TARJETAS KPI ==================
 
-def render_kpi_card(title, value, icon, bg_color, growth_pct=None, growth_label=""):
-    # Ya no usamos growth_pct / growth_label, pero los dejamos opcionales
+def render_kpi_card(title, value, icon, bg_color):
+    # Versión simple: solo título, valor e ícono. SIN porcentajes ni texto adicional.
     card_html = f"""
     <div style="
         background:{bg_color};
@@ -1423,72 +1423,109 @@ def page_financiera():
 
     summary = get_financial_summary(INITIAL_CAPITAL)
 
-    # ===== KPIs numéricos (separados de las tarjetas) =====
-    st.markdown("##### KPIs principales")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Clientes registrados", summary["clientes_registrados"])
-    with c2:
-        st.metric("Créditos activos", summary["creditos_activos"])
-    with c3:
-        st.metric("Créditos cerrados", summary["creditos_cerrados"])
-
-    c4, c5, c6 = st.columns(3)
-    with c4:
-        st.metric("Cartera prestada", f"${summary['monto_total_prestado']:,.2f}")
-    with c5:
-        st.metric("Total cobrado", f"${summary['total_cobrado']:,.2f}")
-    with c6:
-        st.metric("Pendiente por recaudar", f"${summary['monto_pendiente_por_recaudar']:,.2f}")
-
-    # ===== Tarjetas visuales de resumen =====
-    st.markdown("##### Resumen visual")
-
+    # Mismo layout de antes: solo tarjetas, sin porcentajes debajo del número
+    st.markdown("##### Clientes y cartera")
     col1, col2 = st.columns(2)
     with col1:
+        render_kpi_card(
+            "Clientes registrados",
+            f"{summary['clientes_registrados']}",
+            "👥",
+            "#064e3b",
+        )
+    with col2:
+        render_kpi_card(
+            "Créditos activos",
+            f"{summary['creditos_activos']}",
+            "💳",
+            "#1d4ed8",
+        )
+
+    col3, col4 = st.columns(2)
+    with col3:
+        render_kpi_card(
+            "Créditos finalizados",
+            f"{summary['creditos_cerrados']}",
+            "📁",
+            "#312e81",
+        )
+    with col4:
+        render_kpi_card(
+            "Cartera prestada",
+            f"${summary['monto_total_prestado']:,.2f}",
+            "💰",
+            "#7c2d12",
+        )
+
+    st.markdown("##### Ingresos y pendientes")
+    col5, col6 = st.columns(2)
+    with col5:
+        render_kpi_card(
+            "Total cobrado",
+            f"${summary['total_cobrado']:,.2f}",
+            "📥",
+            "#075985",
+        )
+    with col6:
         render_kpi_card(
             "Intereses teóricos",
             f"${summary['intereses_teoricos']:,.2f}",
             "📈",
             "#4a044e",
         )
-    with col2:
+
+    col7, col8 = st.columns(2)
+    with col7:
         render_kpi_card(
-            "Gastos operativos acumulados",
+            "Pendiente por recaudar",
+            f"${summary['monto_pendiente_por_recaudar']:,.2f}",
+            "⌛",
+            "#3b0764",
+        )
+    with col8:
+        render_kpi_card(
+            "Gastos operativos",
             f"${summary['total_gastos_operativos']:,.2f}",
             "💸",
             "#7f1d1d",
         )
 
-    col3, col4 = st.columns(2)
-    with col3:
+    st.markdown("##### Posición financiera")
+    col9, col10 = st.columns(2)
+    with col9:
+        render_kpi_card(
+            "Saldo inicial",
+            f"${INITIAL_CAPITAL:,.2f}",
+            "🏦",
+            "#083344",
+        )
+    with col10:
         render_kpi_card(
             "Saldo en efectivo (caja)",
             f"${summary['saldo_efectivo']:,.2f}",
             "🧾",
             "#14532d",
         )
-    with col4:
+
+    col11, col12 = st.columns(2)
+    with col11:
         render_kpi_card(
             "Saldo total de la cuenta",
             f"${summary['saldo_total_cuenta']:,.2f}",
             "📊",
             "#1e293b",
         )
-
-    # KPI extra de ratio cobrado (no comparativo, solo indicador)
-    ratio_cobrado = (
-        summary["total_cobrado"] / summary["total_a_cobrar"] * 100
-        if summary["total_a_cobrar"] > 0 else 0
-    )
-    st.markdown("##### Indicador de recuperación")
-    render_kpi_card(
-        "Cobrado vs total a cobrar",
-        f"{ratio_cobrado:.1f}%",
-        "✅",
-        "#0f172a",
-    )
+    with col12:
+        ratio_cobrado = (
+            summary["total_cobrado"] / summary["total_a_cobrar"] * 100
+            if summary["total_a_cobrar"] > 0 else 0
+        )
+        render_kpi_card(
+            "Cobrado vs total a cobrar",
+            f"{ratio_cobrado:.1f}%",
+            "✅",
+            "#0f172a",
+        )
 
 
 # ================== MAIN ==================
