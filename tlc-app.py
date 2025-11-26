@@ -466,7 +466,7 @@ def get_all_expenses():
         )
 
 
-# ================== RESUMEN FINANCIERO ==================
+# ================== RESUMEN FINANCIERO Y CRECIMIENTOS ==================
 
 def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
     with get_connection() as conn:
@@ -540,84 +540,54 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
     }
 
 
-def get_monthly_profit():
-    """
-    Cálculo simplificado de utilidad mensual:
-    utilidad = pagos del mes - (capital prestado del mes) - gastos del mes
-    """
+def get_clients_growth_pct():
+    """Crecimiento de número de clientes vs mes anterior."""
     with get_connection() as conn:
-        loans_month = pd.read_sql_query(
+        df = pd.read_sql_query(
+            """
+            SELECT strftime('%Y-%m', created_at) AS month,
+                   COUNT(*) AS n
+            FROM clients
+            GROUP BY month
+            ORDER BY month;
+            """,
+            conn,
+        )
+    if df.empty:
+        return 0.0, False
+    if len(df) == 1:
+        return 0.0, False
+    last = float(df.iloc[-1]["n"])
+    prev = float(df.iloc[-2]["n"])
+    if prev == 0:
+        return 0.0, False
+    pct = (last - prev) / abs(prev) * 100.0
+    return pct, True
+
+
+def get_portfolio_growth_pct():
+    """Crecimiento de cartera (principal prestado) vs mes anterior."""
+    with get_connection() as conn:
+        df = pd.read_sql_query(
             """
             SELECT strftime('%Y-%m', loan_date) AS month,
                    SUM(principal) AS principal
             FROM loans
-            GROUP BY month;
+            GROUP BY month
+            ORDER BY month;
             """,
             conn,
         )
-
-        pays_month = pd.read_sql_query(
-            """
-            SELECT strftime('%Y-%m', payment_date) AS month,
-                   SUM(amount) AS payments
-            FROM payments
-            GROUP BY month;
-            """,
-            conn,
-        )
-
-        exp_month = pd.read_sql_query(
-            """
-            SELECT strftime('%Y-%m', expense_date) AS month,
-                   SUM(amount) AS expenses
-            FROM expenses
-            GROUP BY month;
-            """,
-            conn,
-        )
-
-    months = set()
-    for df in [loans_month, pays_month, exp_month]:
-        if not df.empty:
-            months.update(df["month"].tolist())
-
-    if not months:
-        return pd.DataFrame(columns=["month", "principal", "payments", "expenses", "profit", "growth_pct"])
-
-    months = sorted(months)
-    rows = []
-    last_profit = None
-
-    for m in months:
-        principal = float(
-            loans_month.loc[loans_month["month"] == m, "principal"].sum()
-        )
-        payments = float(
-            pays_month.loc[pays_month["month"] == m, "payments"].sum()
-        )
-        expenses = float(
-            exp_month.loc[exp_month["month"] == m, "expenses"].sum()
-        )
-        profit = payments - principal - expenses
-
-        if last_profit is None or last_profit == 0:
-            growth_pct = 0.0
-        else:
-            growth_pct = (profit - last_profit) / abs(last_profit) * 100.0
-
-        last_profit = profit
-        rows.append(
-            {
-                "month": m,
-                "principal": principal,
-                "payments": payments,
-                "expenses": expenses,
-                "profit": profit,
-                "growth_pct": growth_pct,
-            }
-        )
-
-    return pd.DataFrame(rows)
+    if df.empty:
+        return 0.0, False
+    if len(df) == 1:
+        return 0.0, False
+    last = float(df.iloc[-1]["principal"])
+    prev = float(df.iloc[-2]["principal"])
+    if prev == 0:
+        return 0.0, False
+    pct = (last - prev) / abs(prev) * 100.0
+    return pct, True
 
 
 # ================== PÁGINA: REGISTRO (por pasos) ==================
@@ -967,7 +937,7 @@ def page_creditos_activos():
     )
 
 
-# ================== PÁGINA: REGISTRAR PAGO (con rating) ==================
+# ================== PÁGINA: REGISTRAR PAGO (con rating + datos extra) ==================
 
 def page_registrar_pago():
     st.subheader("Registrar pago semanal")
@@ -1006,10 +976,6 @@ def page_registrar_pago():
         st.write(f"Nombre: {loan['full_name']}")
         st.write(f"Teléfono: {loan['phone']}")
         st.write(f"Dirección: {loan['address']}")
-        if loan["domicilio_path"]:
-            st.write(
-                f"[Buscar documentos en Drive para este cliente]({loan['domicilio_path']})"
-            )
 
     with col2:
         st.markdown("**Crédito**")
@@ -1043,8 +1009,22 @@ def page_registrar_pago():
     total_pagado = payments_df["amount"].sum() if not payments_df.empty else 0.0
     restante = loan["total_to_pay"] - total_pagado
 
+    weeks = int(loan["weeks"])
+    num_payments = len(payments_df)
+    pagos_pendientes = max(weeks - num_payments, 0)
+
+    first_due_str = loan.get("first_due_date", None)
+    if first_due_str:
+        first_due_date = date.fromisoformat(first_due_str)
+        fecha_final = first_due_date + timedelta(days=7 * (weeks - 1))
+        fecha_final_str = fecha_final.strftime("%Y-%m-%d")
+    else:
+        fecha_final_str = "N/A"
+
     st.subheader("Resumen de pagos")
-    st.write(f"Pagos registrados: {len(payments_df)}")
+    st.write(f"Pagos registrados: {num_payments}")
+    st.write(f"Pagos pendientes: {pagos_pendientes}")
+    st.write(f"Fecha de finalización de pagos: {fecha_final_str}")
     st.write(f"Total pagado: ${total_pagado:,.2f}")
     st.write(f"Saldo pendiente: ${restante:,.2f}")
 
@@ -1202,57 +1182,172 @@ def page_gastos():
         )
 
 
-# ================== PÁGINA: DASHBOARD FINANCIERO ==================
+# ================== PÁGINA: DASHBOARD FINANCIERO EN TARJETAS ==================
+
+def render_kpi_card(title, value, icon, bg_color, growth_pct=None, growth_label=""):
+    """Pinta una tarjeta cuadrada con icono, número y % pequeñito."""
+    # Preparar línea de crecimiento
+    if growth_pct is not None and growth_label:
+        sign = "+" if growth_pct >= 0 else ""
+        color = "#4caf50" if growth_pct >= 0 else "#e53935"
+        growth_html = (
+            f'<span style="color:{color}; font-weight:600;">'
+            f'{sign}{growth_pct:.1f}%</span> '
+            f'<span style="color:#9fb3c8;">{growth_label}</span>'
+        )
+    else:
+        growth_html = ""
+
+    card_html = f"""
+    <div style="
+        background:{bg_color};
+        border-radius:14px;
+        padding:10px 12px;
+        height:100%;
+        border:1px solid rgba(255,255,255,0.08);
+        display:flex;
+        flex-direction:column;
+        justify-content:space-between;
+    ">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+            <div style="font-size:0.75rem; color:#cfd8e3; font-weight:500;">
+                {title}
+            </div>
+            <div style="font-size:1rem;">
+                {icon}
+            </div>
+        </div>
+        <div style="margin-top:4px; font-size:1.1rem; font-weight:700; color:white;">
+            {value}
+        </div>
+        <div style="margin-top:3px; font-size:0.68rem;">
+            {growth_html}
+        </div>
+    </div>
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
+
 
 def page_financiera():
     st.subheader("Dashboard financiero")
 
     summary = get_financial_summary(INITIAL_CAPITAL)
+    pct_clients, has_clients_prev = get_clients_growth_pct()
+    pct_portfolio, has_port_prev = get_portfolio_growth_pct()
 
-    # Métricas principales (en tarjetas tipo móvil)
+    # ----- Bloque 1: KPIs de clientes y cartera -----
+    st.markdown("##### Clientes y cartera")
+
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("Clientes registrados", summary["clientes_registrados"])
-        st.metric("Créditos activos", summary["creditos_activos"])
-        st.metric("Créditos finalizados", summary["creditos_cerrados"])
+        render_kpi_card(
+            "Clientes registrados",
+            f"{summary['clientes_registrados']}",
+            "👥",
+            "#064e3b",
+            pct_clients if has_clients_prev else None,
+            "vs mes anterior",
+        )
     with col2:
-        st.metric("Monto total prestado", f"${summary['monto_total_prestado']:,.2f}")
-        st.metric("Intereses teóricos", f"${summary['intereses_teoricos']:,.2f}")
-        st.metric("Total cobrado", f"${summary['total_cobrado']:,.2f}")
-
-    st.markdown("---")
-
-    # Posición financiera
-    st.markdown("#### Posición financiera de la cuenta")
+        render_kpi_card(
+            "Créditos activos",
+            f"{summary['creditos_activos']}",
+            "💳",
+            "#1d4ed8",
+        )
 
     col3, col4 = st.columns(2)
     with col3:
-        st.metric("Saldo inicial", f"${INITIAL_CAPITAL:,.2f}")
-        st.metric("Monto pendiente por recaudar", f"${summary['monto_pendiente_por_recaudar']:,.2f}")
+        render_kpi_card(
+            "Créditos finalizados",
+            f"{summary['creditos_cerrados']}",
+            "📁",
+            "#312e81",
+        )
     with col4:
-        st.metric("Gastos operativos acumulados", f"${summary['total_gastos_operativos']:,.2f}")
-        st.metric("Saldo en efectivo (caja)", f"${summary['saldo_efectivo']:,.2f}")
-        st.metric("Saldo total de la cuenta", f"${summary['saldo_total_cuenta']:,.2f}")
+        render_kpi_card(
+            "Cartera prestada",
+            f"${summary['monto_total_prestado']:,.2f}",
+            "💰",
+            "#7c2d12",
+            pct_portfolio if has_port_prev else None,
+            "crec. cartera vs mes anterior",
+        )
 
-    st.markdown("---")
+    # ----- Bloque 2: Ingresos, intereses y pendientes -----
+    st.markdown("##### Ingresos y pendientes")
 
-    # Gráficas de utilidad y crecimiento
-    monthly_df = get_monthly_profit()
-    if monthly_df.empty:
-        st.info("Aún no hay suficiente información para mostrar gráficas mensuales.")
-        return
+    col5, col6 = st.columns(2)
+    with col5:
+        render_kpi_card(
+            "Total cobrado",
+            f"${summary['total_cobrado']:,.2f}",
+            "📥",
+            "#075985",
+        )
+    with col6:
+        render_kpi_card(
+            "Intereses teóricos",
+            f"${summary['intereses_teoricos']:,.2f}",
+            "📈",
+            "#4a044e",
+        )
 
-    st.markdown("#### Utilidad mensual")
-    st.bar_chart(
-        data=monthly_df.set_index("month")["profit"],
-        height=250,
-    )
+    col7, col8 = st.columns(2)
+    with col7:
+        render_kpi_card(
+            "Pendiente por recaudar",
+            f"${summary['monto_pendiente_por_recaudar']:,.2f}",
+            "⌛",
+            "#3b0764",
+        )
+    with col8:
+        render_kpi_card(
+            "Gastos operativos",
+            f"${summary['total_gastos_operativos']:,.2f}",
+            "💸",
+            "#7f1d1d",
+        )
 
-    st.markdown("#### Crecimiento porcentual de utilidad mensual")
-    st.line_chart(
-        data=monthly_df.set_index("month")["growth_pct"],
-        height=250,
-    )
+    # ----- Bloque 3: Posición de caja y saldo total -----
+    st.markdown("##### Posición financiera")
+
+    col9, col10 = st.columns(2)
+    with col9:
+        render_kpi_card(
+            "Saldo inicial",
+            f"${INITIAL_CAPITAL:,.2f}",
+            "🏦",
+            "#083344",
+        )
+    with col10:
+        render_kpi_card(
+            "Saldo en efectivo (caja)",
+            f"${summary['saldo_efectivo']:,.2f}",
+            "🧾",
+            "#14532d",
+        )
+
+    col11, col12 = st.columns(2)
+    with col11:
+        render_kpi_card(
+            "Saldo total de la cuenta",
+            f"${summary['saldo_total_cuenta']:,.2f}",
+            "📊",
+            "#1e293b",
+        )
+    with col12:
+        # Tarjeta “mini” para mostrar ratios simples
+        ratio_cobrado = (
+            summary["total_cobrado"] / summary["monto_total_prestado"] * 100
+            if summary["monto_total_prestado"] > 0 else 0
+        )
+        render_kpi_card(
+            "Cobrado vs prestado",
+            f"{ratio_cobrado:.1f}%",
+            "✅",
+            "#0f172a",
+        )
 
 
 # ================== MAIN (HOME CON TARJETAS MÓVILES) ==================
