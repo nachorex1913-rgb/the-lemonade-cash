@@ -8,12 +8,18 @@ from googleapiclient.discovery import build
 
 DB_NAME = "lemonade_cash.db"
 
-# ======== CONFIG GCP (SOLO Sheets, Drive desactivado) ========
+# ======== CONFIG GCP (SOLO Sheets) ========
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    # "https://www.googleapis.com/auth/drive.file",  # reservado para futuro
 ]
+
+# ID fijo de tu Google Sheet
+SPREADSHEET_ID_FIXED = "1tk1rm8h4ETGnmM4DwTDKGmaVnoGx-Q6MOmEcBUr5pTc"
+
+# URL base de búsqueda en Google Drive (abre búsqueda por texto)
+DRIVE_SEARCH_BASE_URL = "https://drive.google.com/drive/u/0/search?q="
+
 
 def get_gcp_credentials():
     """Credenciales desde Streamlit Secrets (service account)."""
@@ -44,17 +50,14 @@ def append_loan_to_sheet(
     is_recommended,
     can_pay_weekly,
     accepts_terms,
-    domicilio_url,
-    id_url,
+    docs_url,
 ):
     """
     Agrega una fila a Google Sheets con datos del crédito.
-    Aquí usamos el ID de la hoja directamente para evitar problemas con secrets.
+    Usa el ID fijo de tu hoja de cálculo.
     """
 
-    # 🔒 ID fijo de tu Google Sheet (el que me pasaste)
-    spreadsheet_id = "1tk1rm8h4ETGnmM4DwTDKGmaVnoGx-Q6MOmEcBUr5pTc"
-
+    spreadsheet_id = SPREADSHEET_ID_FIXED
     service = get_sheets_service()
 
     def yes_no(v):
@@ -76,40 +79,18 @@ def append_loan_to_sheet(
         float(principal),
         float(total_to_pay),
         float(weekly_payment),
-        domicilio_url or "",
-        id_url or "",
+        docs_url or "",
     ]]
 
     body = {"values": values}
 
     service.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
-        range="Prestamos!A1",  # pestaña "Prestamos" en tu Google Sheet
+        range="Prestamos!A1",  # pestaña "Prestamos"
         valueInputOption="USER_ENTERED",
         insertDataOption="INSERT_ROWS",
         body=body,
     ).execute()
-
-
-def save_uploaded_file_to_drive(uploaded_file, prefix):
-    """
-    Stub silencioso: No sube a Google Drive por falta de cuota,
-    pero no muestra ningún mensaje al usuario.
-    """
-    if uploaded_file is None:
-        return None
-
-    # Simplemente devolvemos None; en el futuro agregamos Drive Shared.
-    return None
-
-
-    st.warning(
-        "Nota: el archivo se recibió, pero no se está subiendo a Google Drive "
-        "porque la Service Account no tiene cuota de almacenamiento. "
-        "Más adelante se puede activar usando una Unidad Compartida de Workspace."
-    )
-
-    return None
 
 
 # ========= BASE DE DATOS (SQLite) =========
@@ -202,13 +183,16 @@ def upsert_client(
     address,
     emergency_name,
     emergency_phone,
-    domicilio_url,
-    id_url,
+    docs_url,
     has_12m_job,
     is_recommended,
     can_pay_weekly,
     accepts_terms,
 ):
+    """
+    Guardamos la URL de documentos en domicilio_path e id_path
+    (ambas con el mismo valor, para reutilizar columnas).
+    """
     with get_connection() as conn:
         cursor = conn.cursor()
         existing = get_client_by_phone(phone)
@@ -222,7 +206,7 @@ def upsert_client(
                 WHERE phone = ?;
             """, (
                 full_name, address, emergency_name, emergency_phone,
-                domicilio_url, id_url, has_12m_job, is_recommended,
+                docs_url, docs_url, has_12m_job, is_recommended,
                 can_pay_weekly, accepts_terms, phone
             ))
         else:
@@ -234,7 +218,7 @@ def upsert_client(
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATE('now'));
             """, (
                 full_name, phone, address, emergency_name, emergency_phone,
-                domicilio_url, id_url, has_12m_job, is_recommended,
+                docs_url, docs_url, has_12m_job, is_recommended,
                 can_pay_weekly, accepts_terms
             ))
             client_id = cursor.lastrowid
@@ -437,7 +421,7 @@ def page_registrar_credito():
                 f"**Pago semanal estimado:** ${weekly_payment:,.2f}"
             )
 
-    # --------- PASO 2: DATOS DEL CLIENTE Y DOCUMENTOS ---------
+    # --------- PASO 2: DATOS DEL CLIENTE Y DOCUMENTOS (manuales en Drive) ---------
     if st.session_state["precal_aprobada"]:
         st.markdown("---")
         st.subheader("2. Datos del cliente y documentos")
@@ -451,6 +435,15 @@ def page_registrar_credito():
             f"**Fecha del préstamo:** {loan_date.strftime('%Y-%m-%d')}"
         )
 
+        st.markdown("### Instrucciones para documentos")
+        st.markdown(
+            """
+            1. Los documentos (INE, comprobante de domicilio, etc.) se suben **directamente a tu Google Drive**.
+            2. Usa SIEMPRE el **teléfono del cliente** en el nombre del archivo o carpeta.
+            3. Luego podrás buscar esos archivos en Drive desde esta misma app, usando la llave (teléfono).
+            """
+        )
+
         with st.form("form_datos_cliente"):
             st.markdown("### Datos del cliente")
             full_name = st.text_input("Nombre completo")
@@ -459,18 +452,6 @@ def page_registrar_credito():
             emergency_name = st.text_input("Nombre contacto de emergencia")
             emergency_phone = st.text_input("Teléfono contacto de emergencia")
 
-            st.markdown("### Documentos")
-            domicilio_file = st.file_uploader(
-                "Comprobante de domicilio (foto)",
-                type=["png", "jpg", "jpeg"],
-                key="domicilio",
-            )
-            id_file = st.file_uploader(
-                "Identificación oficial (foto)",
-                type=["png", "jpg", "jpeg"],
-                key="id_file",
-            )
-
             submitted_final = st.form_submit_button("Guardar cliente y crédito")
 
         if submitted_final:
@@ -478,13 +459,8 @@ def page_registrar_credito():
                 st.error("Debes capturar al menos el teléfono del cliente.")
                 return
 
-            # Stub: no se sube a Drive, pero mantenemos la lógica
-            domicilio_url = save_uploaded_file_to_drive(
-                domicilio_file, f"{phone}_domicilio"
-            )
-            id_url = save_uploaded_file_to_drive(
-                id_file, f"{phone}_id"
-            )
+            # URL de búsqueda en Google Drive basada en la llave (teléfono)
+            docs_url = f"{DRIVE_SEARCH_BASE_URL}{phone}"
 
             # Guardar/actualizar cliente en SQLite
             client_id = upsert_client(
@@ -493,8 +469,7 @@ def page_registrar_credito():
                 address=address,
                 emergency_name=emergency_name,
                 emergency_phone=emergency_phone,
-                domicilio_url=domicilio_url,
-                id_url=id_url,
+                docs_url=docs_url,
                 has_12m_job=int(st.session_state["precal_has_12m_job"]),
                 is_recommended=int(st.session_state["precal_is_recommended"]),
                 can_pay_weekly=int(st.session_state["precal_can_pay_weekly"]),
@@ -524,8 +499,7 @@ def page_registrar_credito():
                 is_recommended=st.session_state["precal_is_recommended"],
                 can_pay_weekly=st.session_state["precal_can_pay_weekly"],
                 accepts_terms=st.session_state["precal_accepts_terms"],
-                domicilio_url=domicilio_url,
-                id_url=id_url,
+                docs_url=docs_url,
             )
 
             st.success(f"Crédito #{loan_id} registrado correctamente.")
@@ -534,6 +508,12 @@ def page_registrar_credito():
                 f"Total a pagar (50% interés): ${total_to_pay:,.2f}\n\n"
                 f"Plazo: 12 semanas\n\n"
                 f"**Pago semanal:** ${weekly_payment:,.2f}"
+            )
+
+            st.markdown(
+                f"🔗 Para subir o consultar los documentos de este cliente en Drive, "
+                f"puedes usar este enlace (búsqueda por teléfono):\n\n"
+                f"[Buscar documentos en Drive para {phone}]({docs_url})"
             )
 
             # Limpiar estado de precalificación para el siguiente cliente
@@ -584,10 +564,11 @@ def page_registrar_pago():
         st.write(f"Nombre: {loan['full_name']}")
         st.write(f"Teléfono: {loan['phone']}")
         st.write(f"Dirección: {loan['address']}")
+
         if loan["domicilio_path"]:
-            st.write(f"[Comprobante de domicilio]({loan['domicilio_path']})")
-        if loan["id_path"]:
-            st.write(f"[Identificación]({loan['id_path']})")
+            st.write(
+                f"[Buscar documentos en Drive para este cliente]({loan['domicilio_path']})"
+            )
 
     with col2:
         st.markdown("**Crédito**")
