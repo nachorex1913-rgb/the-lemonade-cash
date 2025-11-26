@@ -22,6 +22,17 @@ DRIVE_FOLDER_URL = (
 INITIAL_CAPITAL = 1000.0
 
 
+# ================== RERUN SEGURO ==================
+
+def safe_rerun():
+    """Intenta hacer st.rerun() pero nunca tumba la app."""
+    try:
+        st.rerun()
+    except Exception:
+        # Si por versión de Streamlit no existe o falla, simplemente seguimos.
+        pass
+
+
 # ================== HELPERS NUMÉRICOS ==================
 
 def parse_number(value):
@@ -918,7 +929,7 @@ def page_registro():
                 use_container_width=True,
             ):
                 st.session_state["wizard_step"] = 2
-                st.experimental_rerun()
+                safe_rerun()
 
     # ----- PASO 2 -----
     elif step == 2:
@@ -928,7 +939,7 @@ def page_registro():
             st.warning("Primero completa la precalificación (Paso 1).")
             if st.button("Volver al Paso 1", use_container_width=True):
                 st.session_state["wizard_step"] = 1
-                st.experimental_rerun()
+                safe_rerun()
             return
 
         # Inicializar valores de los widgets si no existen
@@ -970,7 +981,8 @@ def page_registro():
 
                         st.success("Datos del cliente cargados desde la base de clientes.")
                 except Exception as e:
-                    st.error(f"Ocurrió un error cargando el cliente: {e}")
+                    st.error("Ocurrió un error cargando el cliente.")
+                    st.exception(e)
 
         st.markdown("---")
 
@@ -1004,7 +1016,7 @@ def page_registro():
 
         if btn_volver:
             st.session_state["wizard_step"] = 1
-            st.experimental_rerun()
+            safe_rerun()
 
         if btn_siguiente:
             if not phone:
@@ -1019,7 +1031,7 @@ def page_registro():
                 })
                 st.session_state["wizard_data"] = wizard_data
                 st.session_state["wizard_step"] = 3
-                st.experimental_rerun()
+                safe_rerun()
 
     # ----- PASO 3 -----
     elif step == 3:
@@ -1029,7 +1041,7 @@ def page_registro():
             st.warning("Primero completa los datos del cliente (Paso 2).")
             if st.button("Volver al Paso 2", use_container_width=True):
                 st.session_state["wizard_step"] = 2
-                st.experimental_rerun()
+                safe_rerun()
             return
 
         phone = wizard_data["phone"]
@@ -1077,7 +1089,7 @@ def page_registro():
 
         if btn_volver:
             st.session_state["wizard_step"] = 2
-            st.experimental_rerun()
+            safe_rerun()
 
         if btn_guardar:
             if not docs_ok:
@@ -1148,7 +1160,7 @@ def page_registro():
                 for key in list(st.session_state.keys()):
                     if key.startswith("wiz_"):
                         del st.session_state[key]
-                st.experimental_rerun()
+                safe_rerun()
 
 
 # ================== PÁGINAS: CLIENTES ==================
@@ -1346,7 +1358,7 @@ def page_registrar_pago():
         append_payment(selected_loan_id, payment_date, amount, loan["phone"], loan["full_name"])
         update_loan_status_if_paid_sheet(selected_loan_id)
         st.success(f"Pago de ${amount:,.2f} registrado.")
-        st.experimental_rerun()
+        safe_rerun()
 
 
 # ================== PÁGINAS: CALENDARIO ==================
