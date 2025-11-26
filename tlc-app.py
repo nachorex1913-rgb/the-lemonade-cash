@@ -307,6 +307,19 @@ def update_client_rating_sheet(phone: str, rating: int):
     update_row("Clientes", row_index, row)
 
 
+def find_client_by_phone(phone: str):
+    """
+    Devuelve un dict con los datos del cliente si existe en la hoja Clientes.
+    """
+    df = get_clients_df()
+    if df.empty:
+        return None
+    mask = df["phone"].astype(str) == str(phone)
+    if not mask.any():
+        return None
+    return df[mask].iloc[0].to_dict()
+
+
 # ================== PRÉSTAMOS EN SHEETS ==================
 
 @st.cache_data(ttl=60)
@@ -919,6 +932,35 @@ def page_registro():
                 st.rerun()
             return
 
+        # ---- NUEVA SECCIÓN: Autocompletar datos de cliente ya registrado ----
+        st.markdown("#### Autocompletar desde un cliente ya registrado (opcional)")
+        auto_phone = st.text_input(
+            "Teléfono del cliente ya registrado",
+            key="auto_existing_phone",
+            placeholder="Escribe el teléfono para buscar en la base de clientes",
+        )
+        if st.button("Cargar datos del cliente", use_container_width=True):
+            if not auto_phone:
+                st.warning("Escribe un teléfono para buscar.")
+            else:
+                cliente = find_client_by_phone(auto_phone)
+                if cliente is None:
+                    st.warning("No se encontró un cliente con ese teléfono en la base de datos.")
+                else:
+                    # Actualizamos wizard_data con la info del cliente y recargamos
+                    wizard_data.update({
+                        "full_name": cliente.get("full_name", ""),
+                        "phone": cliente.get("phone", ""),
+                        "address": cliente.get("address", ""),
+                        "emergency_name": cliente.get("emergency_name", ""),
+                        "emergency_phone": cliente.get("emergency_phone", ""),
+                    })
+                    st.session_state["wizard_data"] = wizard_data
+                    st.success("Datos del cliente cargados desde la base de clientes.")
+                    st.rerun()
+
+        st.markdown("---")
+
         with st.form("form_datos_cliente"):
             full_name = st.text_input(
                 "Nombre completo",
@@ -1457,26 +1499,22 @@ def page_financiera():
             "#3b0764",
         )
 
-    # ===== Actividad del mes (NUEVOS KPIs) =====
+    # ===== Actividad del mes =====
     loans_df = get_loans_df()
     today = date.today()
     current_month = today.strftime("%Y-%m")
 
-    # Créditos y monto del mes
     creditos_mes = 0
     monto_prestado_mes = 0.0
     pct_recurrentes = 0.0
 
     if not loans_df.empty:
-        # Filtrar por mes actual en loan_date (formato YYYY-MM-DD)
         loans_mes = loans_df[
             loans_df["loan_date"].astype(str).str.startswith(current_month)
         ]
         creditos_mes = len(loans_mes)
         monto_prestado_mes = float(loans_mes["principal"].sum()) if not loans_mes.empty else 0.0
 
-        # Clientes recurrentes (sequence > 1 en algún crédito)
-        # Calculamos por teléfono
         loans_valid = loans_df[loans_df["phone"].astype(str) != ""]
         if not loans_valid.empty:
             counts = loans_valid.groupby("phone")["loan_id"].count()
@@ -1584,7 +1622,7 @@ def page_financiera():
         )
 
     # ===== Indicador de utilidad =====
-    utilidad = summary["intereses_teoricos"]  # usando intereses_teoricos como utilidad
+    utilidad = summary["intereses_teoricos"]
     pct_capital = (utilidad / INITIAL_CAPITAL * 100) if INITIAL_CAPITAL > 0 else 0
     pct_saldo_final = (
         utilidad / summary["saldo_total_cuenta"] * 100
