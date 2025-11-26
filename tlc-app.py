@@ -13,11 +13,14 @@ DB_NAME = "lemonade_cash.db"
 # Solo Sheets (Drive queda manual)
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# ID de tu Google Sheet (YA FUNCIONA)
+# ID fijo de tu Google Sheet
 SPREADSHEET_ID_FIXED = "1tk1rm8h4ETGnmM4DwTDKGmaVnoGx-Q6MOmEcBUr5pTc"
 
-# URL base de búsqueda en Google Drive por texto
+# URL base de búsqueda en Google Drive por texto (para docs_url por teléfono)
 DRIVE_SEARCH_BASE_URL = "https://drive.google.com/drive/u/0/search?q="
+
+# Carpeta fija donde tú subes las imágenes desde el cel
+DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/1Osdk52hINpP9c1syvGqIVGVYm4yJV0l-?usp=drive_link"
 
 
 # ================== GOOGLE SHEETS ==================
@@ -435,11 +438,11 @@ def update_client_rating(client_id: int, rating: int):
         conn.commit()
 
 
-# ================== PÁGINA: WIZARD DE REGISTRO ==================
+# ================== PÁGINA: REGISTRO (por pasos) ==================
 
-def page_wizard_registro():
+def page_registro():
     # Título dentro de la pestaña
-    st.header("Registro de crédito")
+    st.header("Registro")
 
     # Estado del wizard
     if "wizard_step" not in st.session_state:
@@ -488,7 +491,8 @@ def page_wizard_registro():
                 value=wizard_data.get("loan_date", date.today()),
             )
 
-            submitted_precal = st.form_submit_button("Guardar y continuar al Paso 2")
+            # AHORA: botón se llama "Ver precalificación"
+            submitted_precal = st.form_submit_button("Ver precalificación")
 
         if submitted_precal:
             if principal <= 0:
@@ -500,6 +504,12 @@ def page_wizard_registro():
                 )
             else:
                 # Guardamos en el wizard
+                interest_rate = 0.5
+                weeks = 12
+                total_to_pay = principal * (1 + interest_rate)
+                weekly_payment = total_to_pay / weeks
+                first_due = get_first_due_date(loan_date)
+
                 wizard_data.update({
                     "principal": principal,
                     "has_12m_job": has_12m_job,
@@ -507,25 +517,31 @@ def page_wizard_registro():
                     "can_pay_weekly": can_pay_weekly,
                     "accepts_terms": accepts_terms,
                     "loan_date": loan_date,
+                    "precal_ok": True,
+                    "precal_total_to_pay": total_to_pay,
+                    "precal_weekly_payment": weekly_payment,
+                    "precal_first_due": first_due.isoformat(),
                 })
                 st.session_state["wizard_data"] = wizard_data
 
-                interest_rate = 0.5
-                weeks = 12
-                total_to_pay = principal * (1 + interest_rate)
-                weekly_payment = total_to_pay / weeks
-                first_due = get_first_due_date(loan_date)
+        # Si ya hay precalificación válida, mostramos el resumen (pantalla azul) y botón para seguir
+        if wizard_data.get("precal_ok"):
+            principal = wizard_data["principal"]
+            total_to_pay = wizard_data["precal_total_to_pay"]
+            weekly_payment = wizard_data["precal_weekly_payment"]
+            first_due = date.fromisoformat(wizard_data["precal_first_due"])
 
-                st.success("Precalificación aprobada.")
-                st.info(
-                    f"Monto solicitado: ${principal:,.2f}\n\n"
-                    f"Total a pagar (50% interés): ${total_to_pay:,.2f}\n\n"
-                    f"Plazo: 12 semanas\n\n"
-                    f"Pago semanal estimado: ${weekly_payment:,.2f}\n\n"
-                    f"Primer pago programado para el sábado: {first_due.strftime('%Y-%m-%d')}"
-                )
+            st.success("Precalificación aprobada.")
+            st.info(
+                f"Monto solicitado: ${principal:,.2f}\n\n"
+                f"Total a pagar (50% interés): ${total_to_pay:,.2f}\n\n"
+                f"Plazo: 12 semanas\n\n"
+                f"Pago semanal estimado: ${weekly_payment:,.2f}\n\n"
+                f"Primer pago programado para el sábado: {first_due.strftime('%Y-%m-%d')}"
+            )
 
-                # Avanzar al paso 2 y recargar pantalla
+            # Botón para avanzar SOLO si el cliente acepta continuar
+            if st.button("Continuar al Paso 2 (cliente acepta continuar)"):
                 st.session_state["wizard_step"] = 2
                 st.rerun()
 
@@ -533,7 +549,7 @@ def page_wizard_registro():
     elif step == 2:
         st.subheader("Paso 2: Datos del cliente")
 
-        if "principal" not in wizard_data:
+        if not wizard_data.get("precal_ok"):
             st.warning("Primero completa la precalificación (Paso 1).")
             if st.button("Volver al Paso 1"):
                 st.session_state["wizard_step"] = 1
@@ -592,12 +608,28 @@ def page_wizard_registro():
 
         st.markdown("### Instrucciones para documentos")
         st.markdown(
-            f"""
-            1. Sube los documentos (INE, comprobante de domicilio, etc.) **directamente en tu Google Drive**.
-            2. Usa SIEMPRE el **teléfono del cliente** (`{phone}`) en el nombre de la carpeta o archivos.
-            3. Puedes usar este enlace para buscar rápidamente los documentos de este cliente en Drive:
+            """
+            Sube los documentos (ID, bill o comprobante de domicilio, etc.) directamente en tu Google Drive.
+            """
+        )
 
-            👉 [**Buscar documentos en Drive para {phone}**]({docs_url})
+        # Botón que abre la carpeta fija de Drive
+        st.markdown(
+            f"""
+            <a href="{DRIVE_FOLDER_URL}" target="_blank">
+                <button style="padding:8px 16px; border-radius:4px; border:none; background-color:#0f62fe; color:white; cursor:pointer;">
+                    Cargar imágenes en carpeta de Drive
+                </button>
+            </a>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            f"""
+            Además, puedes usar este enlace para buscar rápidamente los documentos de este cliente por teléfono en Drive:
+
+            👉 [Buscar documentos en Drive para {phone}]({docs_url})
             """
         )
 
@@ -678,13 +710,17 @@ def page_wizard_registro():
                 first_due_date=first_due,
             )
 
-            st.success(f"Crédito #{loan_id} registrado correctamente.")
+            # ✅ Mensaje de confirmación + resumen en azul
+            st.success("Cliente y crédito registrados correctamente.")
+
             st.info(
                 f"Crédito #{sequence} para este cliente\n\n"
-                f"Monto prestado: ${principal:,.2f}\n\n"
-                f"Total a pagar (50% interés): ${total_to_pay:,.2f}\n\n"
-                f"Plazo: 12 semanas\n\n"
-                f"Pago semanal: ${weekly_payment:,.2f}\n\n"
+                f"Nombre: {full_name}\n"
+                f"Teléfono: {phone}\n\n"
+                f"Monto prestado: ${principal:,.2f}\n"
+                f"Total a pagar (50% interés): ${total_to_pay:,.2f}\n"
+                f"Plazo: 12 semanas\n"
+                f"Pago semanal: ${weekly_payment:,.2f}\n"
                 f"Primer pago programado para el sábado: {first_due.strftime('%Y-%m-%d')}"
             )
 
@@ -692,10 +728,11 @@ def page_wizard_registro():
                 f"[Ver / buscar documentos en Drive para {phone}]({docs_url})"
             )
 
-            # Resetear wizard para el siguiente cliente
-            st.session_state["wizard_step"] = 1
-            st.session_state["wizard_data"] = {}
-            st.rerun()
+            # Botón para registrar otro crédito
+            if st.button("Registrar otro crédito"):
+                st.session_state["wizard_step"] = 1
+                st.session_state["wizard_data"] = {}
+                st.rerun()
 
 
 # ================== PÁGINA: CLIENTES (con rating) ==================
@@ -954,7 +991,7 @@ def main():
     st.write("Estamos ahí")
 
     tabs = st.tabs([
-        "Registro (wizard)",
+        "Registro",
         "Clientes",
         "Créditos activos",
         "Registrar pago",
@@ -963,7 +1000,7 @@ def main():
     ])
 
     with tabs[0]:
-        page_wizard_registro()
+        page_registro()
     with tabs[1]:
         page_clientes()
     with tabs[2]:
