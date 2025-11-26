@@ -22,6 +22,9 @@ DRIVE_SEARCH_BASE_URL = "https://drive.google.com/drive/u/0/search?q="
 # Carpeta fija donde tú subes las imágenes desde el cel
 DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/1Osdk52hINpP9c1syvGqIVGVYm4yJV0l-?usp=drive_link"
 
+# Saldo inicial de la cuenta
+INITIAL_CAPITAL = 1000.0
+
 
 # ================== GOOGLE SHEETS ==================
 
@@ -438,6 +441,66 @@ def update_client_rating(client_id: int, rating: int):
         conn.commit()
 
 
+# ================== RESUMEN FINANCIERO ==================
+
+def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        # Clientes
+        cursor.execute("SELECT COUNT(*) FROM clients;")
+        (clientes_registrados,) = cursor.fetchone()
+
+        # Créditos activos
+        cursor.execute("SELECT COUNT(*) FROM loans WHERE status = 'activo';")
+        (creditos_activos,) = cursor.fetchone()
+
+        # Créditos finalizados
+        cursor.execute("SELECT COUNT(*) FROM loans WHERE status = 'cerrado';")
+        (creditos_cerrados,) = cursor.fetchone()
+
+        # Sumas de préstamos
+        cursor.execute("""
+            SELECT
+                COALESCE(SUM(principal), 0),
+                COALESCE(SUM(total_to_pay), 0)
+            FROM loans;
+        """)
+        principal_sum, total_to_pay_sum = cursor.fetchone()
+
+        # Pagos realizados
+        cursor.execute("""
+            SELECT COALESCE(SUM(amount), 0)
+            FROM payments;
+        """)
+        (total_pagado,) = cursor.fetchone()
+
+    monto_total_prestado = principal_sum
+    total_a_cobrar = total_to_pay_sum
+    total_cobrado = total_pagado
+
+    intereses_teoricos = total_a_cobrar - monto_total_prestado
+    monto_pendiente_por_recaudar = total_a_cobrar - total_cobrado
+
+    # Saldo en efectivo (caja)
+    saldo_efectivo = initial_capital - monto_total_prestado + total_cobrado
+
+    # Saldo total (caja + cartera por cobrar)
+    saldo_total_cuenta = saldo_efectivo + monto_pendiente_por_recaudar
+
+    return {
+        "clientes_registrados": int(clientes_registrados),
+        "creditos_activos": int(creditos_activos),
+        "creditos_cerrados": int(creditos_cerrados),
+        "monto_total_prestado": float(monto_total_prestado),
+        "intereses_teoricos": float(intereses_teoricos),
+        "total_cobrado": float(total_cobrado),
+        "monto_pendiente_por_recaudar": float(monto_pendiente_por_recaudar),
+        "saldo_efectivo": float(saldo_efectivo),
+        "saldo_total_cuenta": float(saldo_total_cuenta),
+    }
+
+
 # ================== PÁGINA: REGISTRO (por pasos) ==================
 
 def page_registro():
@@ -491,7 +554,7 @@ def page_registro():
                 value=wizard_data.get("loan_date", date.today()),
             )
 
-            # AHORA: botón se llama "Ver precalificación"
+            # Botón: Ver precalificación
             submitted_precal = st.form_submit_button("Ver precalificación")
 
         if submitted_precal:
@@ -524,7 +587,7 @@ def page_registro():
                 })
                 st.session_state["wizard_data"] = wizard_data
 
-        # Si ya hay precalificación válida, mostramos el resumen (pantalla azul) y botón para seguir
+        # Si ya hay precalificación válida, mostramos resumen y botón para seguir
         if wizard_data.get("precal_ok"):
             principal = wizard_data["principal"]
             total_to_pay = wizard_data["precal_total_to_pay"]
@@ -735,7 +798,7 @@ def page_registro():
                 st.rerun()
 
 
-# ================== PÁGINA: CLIENTES (con rating) ==================
+# ================== PÁGINA: CLIENTES (solo vista) ==================
 
 def page_clientes():
     st.header("👤 Base de clientes - The Lemonade Cash")
@@ -756,34 +819,6 @@ def page_clientes():
         hide_index=True,
     )
 
-    st.markdown("---")
-    st.subheader("Editar calificación (estrellas)")
-
-    options = [
-        f"{row.id} - {row.full_name} ({row.phone})"
-        for _, row in clients_df.iterrows()
-    ]
-    selected = st.selectbox("Selecciona un cliente", options)
-    if not selected:
-        return
-
-    client_id = int(selected.split(" - ")[0])
-    client_row = clients_df[clients_df["id"] == client_id].iloc[0]
-
-    st.write(f"**Cliente:** {client_row['full_name']}  |  Tel: {client_row['phone']}")
-
-    current_rating = client_row["rating"] if pd.notna(client_row["rating"]) else 3
-    new_rating = st.slider(
-        "Calificación del cliente (1 a 5 estrellas)",
-        min_value=1,
-        max_value=5,
-        value=int(current_rating),
-    )
-
-    if st.button("Guardar calificación"):
-        update_client_rating(client_id, new_rating)
-        st.success("Calificación actualizada. Recarga la página para ver los cambios.")
-
 
 # ================== PÁGINA: CRÉDITOS ACTIVOS ==================
 
@@ -802,7 +837,53 @@ def page_creditos_activos():
     )
 
 
-# ================== PÁGINA: REGISTRAR PAGO ==================
+# ================== PÁGINA: DASHBOARD FINANCIERO ==================
+
+def page_financiera():
+    st.header("📊 Dashboard financiero - The Lemonade Cash")
+
+    summary = get_financial_summary(INITIAL_CAPITAL)
+
+    # Primer bloque: métricas principales
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Clientes registrados", summary["clientes_registrados"])
+        st.metric("Créditos activos", summary["creditos_activos"])
+    with col2:
+        st.metric("Créditos finalizados", summary["creditos_cerrados"])
+        st.metric("Monto total prestado", f"${summary['monto_total_prestado']:,.2f}")
+    with col3:
+        st.metric("Intereses teóricos ganados", f"${summary['intereses_teoricos']:,.2f}")
+        st.metric("Total cobrado (pagos)", f"${summary['total_cobrado']:,.2f}")
+
+    st.markdown("---")
+
+    # Segundo bloque: posición financiera
+    st.subheader("Posición financiera de la cuenta")
+
+    col4, col5, col6 = st.columns(3)
+    with col4:
+        st.metric("Saldo inicial", f"${INITIAL_CAPITAL:,.2f}")
+        st.metric("Monto pendiente por recaudar", f"${summary['monto_pendiente_por_recaudar']:,.2f}")
+    with col5:
+        st.metric("Saldo en efectivo (caja)", f"${summary['saldo_efectivo']:,.2f}")
+    with col6:
+        st.metric("Saldo total de la cuenta", f"${summary['saldo_total_cuenta']:,.2f}")
+
+    st.markdown(
+        """
+        **Leyenda rápida:**
+
+        - *Monto total prestado*: suma de todos los capitales entregados.  
+        - *Intereses teóricos ganados*: diferencia entre lo que deberías cobrar y lo que prestaste.  
+        - *Monto pendiente por recaudar*: total que aún no ha sido pagado por los clientes.  
+        - *Saldo en efectivo*: capital inicial menos lo que has prestado más todo lo que ya has cobrado.  
+        - *Saldo total de la cuenta*: efectivo + cartera pendiente (lo que falta por cobrar).
+        """
+    )
+
+
+# ================== PÁGINA: REGISTRAR PAGO (con rating) ==================
 
 def page_registrar_pago():
     st.header("✅ Registrar pago semanal - The Lemonade Cash")
@@ -845,8 +926,6 @@ def page_registrar_pago():
             st.write(
                 f"[Buscar documentos en Drive para este cliente]({loan['domicilio_path']})"
             )
-        if "rating" in loan.index and pd.notna(loan["rating"]):
-            st.write(f"Calificación: {int(loan['rating'])} ⭐")
 
     with col2:
         st.markdown("**Crédito**")
@@ -857,6 +936,24 @@ def page_registrar_pago():
         st.write(f"Total a pagar: ${loan['total_to_pay']:,.2f}")
         st.write(f"Pago semanal: ${loan['weekly_payment']:,.2f}")
         st.write(f"Estado: {loan['status']}")
+
+    # Calificación del cliente (basada en puntualidad y pagos)
+    st.markdown("---")
+    st.subheader("Calificación del cliente (puntualidad y pagos completos)")
+
+    client_id = int(loan["client_id"])
+    current_rating = loan["rating"] if pd.notna(loan["rating"]) else 3
+    new_rating = st.slider(
+        "Calificación (1 a 5 estrellas)",
+        min_value=1,
+        max_value=5,
+        value=int(current_rating),
+        help="Evalúa qué tan puntual y cumplido ha sido este cliente con sus pagos.",
+    )
+
+    if st.button("Guardar calificación del cliente"):
+        update_client_rating(client_id, new_rating)
+        st.success("Calificación del cliente actualizada.")
 
     payments_df = get_payments_for_loan(selected_loan_id)
     total_pagado = payments_df["amount"].sum() if not payments_df.empty else 0.0
@@ -994,6 +1091,7 @@ def main():
         "Registro",
         "Clientes",
         "Créditos activos",
+        "Financiera",
         "Registrar pago",
         "Historial",
         "Calendario de pagos",
@@ -1006,10 +1104,12 @@ def main():
     with tabs[2]:
         page_creditos_activos()
     with tabs[3]:
-        page_registrar_pago()
+        page_financiera()
     with tabs[4]:
-        page_historial()
+        page_registrar_pago()
     with tabs[5]:
+        page_historial()
+    with tabs[6]:
         page_calendario()
 
 
