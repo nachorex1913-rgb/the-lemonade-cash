@@ -147,7 +147,8 @@ def init_db():
             is_recommended INTEGER,
             can_pay_weekly INTEGER,
             accepts_terms INTEGER,
-            created_at TEXT
+            created_at TEXT,
+            rating INTEGER
         );
         """)
 
@@ -182,13 +183,11 @@ def init_db():
         """)
 
         # --------- Migraciones: asegurar columnas nuevas ---------
-        # En clients: rating
         cursor.execute("PRAGMA table_info(clients);")
         existing_client_cols = {row[1] for row in cursor.fetchall()}
         if "rating" not in existing_client_cols:
             cursor.execute("ALTER TABLE clients ADD COLUMN rating INTEGER;")
 
-        # En loans: first_due_date, sequence (si no están ya)
         cursor.execute("PRAGMA table_info(loans);")
         existing_loan_cols = {row[1] for row in cursor.fetchall()}
         if "first_due_date" not in existing_loan_cols:
@@ -702,8 +701,12 @@ def page_clientes():
         return
 
     st.subheader("Listado de clientes")
+    cols_to_show = ["id", "full_name", "phone", "address"]
+    if "rating" in clients_df.columns:
+        cols_to_show.append("rating")
+
     st.dataframe(
-        clients_df[["id", "full_name", "phone", "address", "rating"]],
+        clients_df[cols_to_show],
         use_container_width=True,
         hide_index=True,
     )
@@ -711,7 +714,6 @@ def page_clientes():
     st.markdown("---")
     st.subheader("Editar calificación (estrellas)")
 
-    # Selector de cliente
     options = [
         f"{row.id} - {row.full_name} ({row.phone})"
         for _, row in clients_df.iterrows()
@@ -760,7 +762,11 @@ def page_creditos_activos():
 def page_registrar_pago():
     st.header("✅ Registrar pago semanal - The Lemonade Cash")
 
-    search_text = st.text_input("Buscar cliente por nombre o teléfono:")
+    # 🔑 key distinto para este text_input
+    search_text = st.text_input(
+        "Buscar cliente por nombre o teléfono:",
+        key="search_pago"
+    )
     if not search_text:
         st.info("Escribe al menos parte del nombre o teléfono para buscar.")
         return
@@ -795,7 +801,7 @@ def page_registrar_pago():
             st.write(
                 f"[Buscar documentos en Drive para este cliente]({loan['domicilio_path']})"
             )
-        if pd.notna(loan.get("rating", None)):
+        if "rating" in loan.index and pd.notna(loan["rating"]):
             st.write(f"Calificación: {int(loan['rating'])} ⭐")
 
     with col2:
@@ -862,7 +868,11 @@ def page_historial():
 def page_calendario():
     st.header("📆 Calendario de pagos (por crédito)")
 
-    search_text = st.text_input("Buscar cliente por nombre o teléfono:")
+    # 🔑 key distinto para este text_input
+    search_text = st.text_input(
+        "Buscar cliente por nombre o teléfono:",
+        key="search_calendario"
+    )
     if not search_text:
         st.info("Escribe al menos parte del nombre o teléfono para buscar.")
         return
