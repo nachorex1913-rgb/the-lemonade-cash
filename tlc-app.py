@@ -68,8 +68,8 @@ def ensure_sheet_exists(title: str):
 
 def read_sheet(title: str, range_a1: str):
     """
-    Lee un rango A1 de una pestaña y devuelve list-of-lists (sin encabezados).
-    Ejemplo: read_sheet("Clientes", "A2:L")
+    Lee un rango A1 de una pestaña y devuelve list-of-lists.
+    Ejemplo: read_sheet("Clientes", "A1:L")
     """
     service = get_sheets_service()
     try:
@@ -101,7 +101,7 @@ def append_rows(title: str, rows, start_a1: str = "A1"):
 def update_row(title: str, row_index: int, values):
     """
     Actualiza una fila específica (1-based) en una pestaña, desde la columna A.
-    row_index incluye encabezados (A1=1, A2=2, etc.).
+    row_index incluye todo (A1=1, A2=2, etc.).
     """
     service = get_sheets_service()
     end_col = chr(ord("A") + len(values) - 1)
@@ -117,11 +117,6 @@ def update_row(title: str, row_index: int, values):
 
 # ================== HELPERS DE PARSEO ==================
 
-def _parse_si_bool(value):
-    """Convierte 'SI'/'NO' (u otros) a 1/0."""
-    return 1 if str(value).strip().upper() == "SI" else 0
-
-
 def _bool_to_si(value):
     return "SI" if value else "NO"
 
@@ -131,7 +126,7 @@ def _bool_to_si(value):
 def get_clients_df():
     """
     Hoja: Clientes
-    Columnas (por fila, desde la fila 2):
+    Columnas (por fila, desde la fila 1):
     A phone
     B full_name
     C address
@@ -146,7 +141,7 @@ def get_clients_df():
     L rating (número o vacío)
     """
     ensure_sheet_exists("Clientes")
-    rows = read_sheet("Clientes", "A2:L")
+    rows = read_sheet("Clientes", "A1:L")
     if not rows:
         return pd.DataFrame(
             columns=[
@@ -167,7 +162,7 @@ def get_clients_df():
         )
 
     data = []
-    for idx, row in enumerate(rows, start=2):
+    for idx, row in enumerate(rows, start=1):  # fila real en Google Sheets
         row = row + [""] * (12 - len(row))  # Asegurar 12 columnas
         (
             phone,
@@ -231,12 +226,11 @@ def upsert_client_sheet(
 
     created_at = date.today().isoformat()
 
-    # Normalizamos a string por si hubiera tipos raros (float, etc.)
     existing_phones = df["phone"].astype(str).values if not df.empty else []
 
-    if df.empty or phone not in existing_phones:
-        # Insertar nuevo
-        row_index = len(df) + 2  # encabezado en fila 1, datos desde 2
+    if df.empty or str(phone) not in existing_phones:
+        # Insertar nuevo (datos comienzan en fila 1)
+        row_index = len(df) + 1
         row = [
             phone,
             full_name,
@@ -280,7 +274,7 @@ def upsert_client_sheet(
 
 def update_client_rating_sheet(phone: str, rating: int):
     df = get_clients_df()
-    if df.empty or phone not in df["phone"].astype(str).values:
+    if df.empty or str(phone) not in df["phone"].astype(str).values:
         return
 
     row_info = df[df["phone"].astype(str) == str(phone)].iloc[0]
@@ -308,7 +302,7 @@ def update_client_rating_sheet(phone: str, rating: int):
 def get_loans_df():
     """
     Hoja: Prestamos
-    Columnas esperadas (fila 2 en adelante):
+    Columnas esperadas (fila 1 en adelante):
     A system_reg_date
     B loan_id (numérico)
     C sequence
@@ -327,10 +321,10 @@ def get_loans_df():
     P total_to_pay
     Q weekly_payment
     R docs_url
-    S status (activo/cerrado) [puede venir vacío]
+    S status (activo/cerrado)
     """
     ensure_sheet_exists("Prestamos")
-    rows = read_sheet("Prestamos", "A2:S")
+    rows = read_sheet("Prestamos", "A1:S")
     if not rows:
         return pd.DataFrame(
             columns=[
@@ -358,7 +352,7 @@ def get_loans_df():
         )
 
     data = []
-    for idx, row in enumerate(rows, start=2):
+    for idx, row in enumerate(rows, start=1):
         row = row + [""] * (19 - len(row))  # asegurar 19 columnas
         (
             system_reg_date,
@@ -618,14 +612,14 @@ def get_all_loans_with_status(status_filter=None):
 def get_payments_df():
     """
     Hoja: Pagos
-    Columnas (fila 2 en adelante):
+    Columnas (fila 1 en adelante):
     A created_at
     B loan_id
     C payment_date
     D amount
     """
     ensure_sheet_exists("Pagos")
-    rows = read_sheet("Pagos", "A2:D")
+    rows = read_sheet("Pagos", "A1:D")
     if not rows:
         return pd.DataFrame(
             columns=["created_at", "loan_id", "payment_date", "amount"]
@@ -717,7 +711,7 @@ def update_loan_status_if_paid_sheet(loan_id: int):
 def get_expenses_df():
     """
     Hoja: Gastos
-    Columnas (fila 2 en adelante):
+    Columnas (fila 1 en adelante):
     A created_at
     B expense_date
     C amount
@@ -725,7 +719,7 @@ def get_expenses_df():
     E notes
     """
     ensure_sheet_exists("Gastos")
-    rows = read_sheet("Gastos", "A2:E")
+    rows = read_sheet("Gastos", "A1:E")
     if not rows:
         return pd.DataFrame(columns=["created_at", "expense_date", "amount", "category", "notes"])
 
@@ -892,6 +886,16 @@ def render_kpi_card(title, value, icon, bg_color, growth_pct=None, growth_label=
 
 
 # ================== PÁGINAS: REGISTRO, CLIENTES, ETC. ==================
+
+def get_first_due_date(loan_date: date) -> date:
+    weekday = loan_date.weekday()
+    days_to_this_saturday = (5 - weekday) % 7
+    if days_to_this_saturday >= 3:
+        first = loan_date + timedelta(days=days_to_this_saturday)
+    else:
+        first = loan_date + timedelta(days=days_to_this_saturday + 7)
+    return first
+
 
 def page_registro():
     st.subheader("Registro de crédito")
