@@ -7,29 +7,55 @@ from googleapiclient.discovery import build
 
 # ================== CONFIGURACIÓN GENERAL ==================
 
-# Solo Sheets (Drive lo manejas manualmente)
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# ID fijo de tu Google Sheet
 SPREADSHEET_ID = "1tk1rm8h4ETGnmM4DwTDKGmaVnoGx-Q6MOmEcBUr5pTc"
 
-# URL base de búsqueda en Google Drive por texto (para docs_url por teléfono)
 DRIVE_SEARCH_BASE_URL = "https://drive.google.com/drive/u/0/search?q="
 
-# Carpeta fija donde tú subes las imágenes desde el cel
 DRIVE_FOLDER_URL = (
     "https://drive.google.com/drive/folders/"
     "1Osdk52hINpP9c1syvGqIVGVYm4yJV0l-?usp=drive_link"
 )
 
-# Saldo inicial de la cuenta
 INITIAL_CAPITAL = 1000.0
+
+
+# ================== HELPERS NUMÉRICOS ==================
+
+def parse_number(value):
+    """
+    Convierte strings tipo:
+    - '62.5' -> 62.5
+    - '62,5' -> 62.5
+    - '1,234.56' -> 1234.56
+    - '1.234,56' -> 1234.56
+    - '625' -> 625.0
+    """
+    if value is None:
+        return 0.0
+    s = str(value).strip()
+    if s == "":
+        return 0.0
+
+    s = s.replace(" ", "")
+
+    if "," in s and "." in s:
+        # Asumimos coma = separador de miles, punto = decimal
+        s = s.replace(",", "")
+    elif "," in s and "." not in s:
+        # Solo coma: la usamos como decimal
+        s = s.replace(",", ".")
+
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
 
 
 # ================== GOOGLE SHEETS: CORE ==================
 
 def get_gcp_credentials():
-    """Credenciales desde Streamlit Secrets (service account)."""
     return service_account.Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
         scopes=SCOPES,
@@ -43,7 +69,6 @@ def get_sheets_service():
 
 
 def ensure_sheet_exists(title: str):
-    """Crea la pestaña si no existe todavía."""
     service = get_sheets_service()
     spreadsheet = service.spreadsheets().get(
         spreadsheetId=SPREADSHEET_ID
@@ -67,10 +92,6 @@ def ensure_sheet_exists(title: str):
 
 
 def read_sheet(title: str, range_a1: str):
-    """
-    Lee un rango A1 de una pestaña y devuelve list-of-lists.
-    Ejemplo: read_sheet("Clientes", "A1:L")
-    """
     service = get_sheets_service()
     try:
         resp = service.spreadsheets().values().get(
@@ -83,10 +104,6 @@ def read_sheet(title: str, range_a1: str):
 
 
 def append_rows(title: str, rows, start_a1: str = "A1"):
-    """
-    Agrega filas al final de la pestaña.
-    'rows' es list-of-lists.
-    """
     service = get_sheets_service()
     body = {"values": rows}
     service.spreadsheets().values().append(
@@ -100,13 +117,13 @@ def append_rows(title: str, rows, start_a1: str = "A1"):
 
 def update_row(title: str, row_index: int, values):
     """
-    Actualiza una fila específica (1-based) en una pestaña, desde la columna A.
-    row_index incluye todo (A1=1, A2=2, etc.).
+    row_index es 1-based, fila real de la hoja.
+    Convertimos todo a string para que la API JSON no se queje de numpy types.
     """
     service = get_sheets_service()
     end_col = chr(ord("A") + len(values) - 1)
     range_a1 = f"{title}!A{row_index}:{end_col}{row_index}"
-    body = {"values": [values]}
+    body = {"values": [[str(v) for v in values]]}
     service.spreadsheets().values().update(
         spreadsheetId=SPREADSHEET_ID,
         range=range_a1,
@@ -115,7 +132,7 @@ def update_row(title: str, row_index: int, values):
     ).execute()
 
 
-# ================== HELPERS DE PARSEO ==================
+# ================== HELPERS DE PARSEO SIMPLE ==================
 
 def _bool_to_si(value):
     return "SI" if value else "NO"
@@ -126,7 +143,7 @@ def _bool_to_si(value):
 def get_clients_df():
     """
     Hoja: Clientes
-    Columnas (por fila, desde la fila 1):
+    Columnas (fila 1 en adelante):
     A phone
     B full_name
     C address
@@ -162,8 +179,8 @@ def get_clients_df():
         )
 
     data = []
-    for idx, row in enumerate(rows, start=1):  # fila real en Google Sheets
-        row = row + [""] * (12 - len(row))  # Asegurar 12 columnas
+    for idx, row in enumerate(rows, start=1):
+        row = row + [""] * (12 - len(row))
         (
             phone,
             full_name,
@@ -212,10 +229,6 @@ def upsert_client_sheet(
     can_pay_weekly,
     accepts_terms,
 ):
-    """
-    Crea/actualiza cliente en la hoja 'Clientes' usando teléfono como llave.
-    Devuelve row_index (para referencia si se necesita).
-    """
     ensure_sheet_exists("Clientes")
     df = get_clients_df()
 
@@ -229,7 +242,6 @@ def upsert_client_sheet(
     existing_phones = df["phone"].astype(str).values if not df.empty else []
 
     if df.empty or str(phone) not in existing_phones:
-        # Insertar nuevo (datos comienzan en fila 1)
         row_index = len(df) + 1
         row = [
             phone,
@@ -243,12 +255,11 @@ def upsert_client_sheet(
             accepts_terms_si,
             docs_url,
             created_at,
-            "",  # rating vacío
+            "",
         ]
         append_rows("Clientes", [row], "A1")
         return row_index
     else:
-        # Actualizar existente
         row_info = df[df["phone"].astype(str) == str(phone)].iloc[0]
         row_index = int(row_info["row_index"])
         rating = row_info["rating"] if row_info["rating"] is not None else ""
@@ -304,7 +315,7 @@ def get_loans_df():
     Hoja: Prestamos
     Columnas esperadas (fila 1 en adelante):
     A system_reg_date
-    B loan_id (numérico)
+    B loan_id
     C sequence
     D loan_date
     E first_due_date
@@ -313,15 +324,15 @@ def get_loans_df():
     H address
     I emergency_name
     J emergency_phone
-    K has_12m_job (SI/NO)
-    L is_recommended (SI/NO)
-    M can_pay_weekly (SI/NO)
-    N accepts_terms (SI/NO)
+    K has_12m_job
+    L is_recommended
+    M can_pay_weekly
+    N accepts_terms
     O principal
     P total_to_pay
     Q weekly_payment
     R docs_url
-    S status (activo/cerrado)
+    S status
     """
     ensure_sheet_exists("Prestamos")
     rows = read_sheet("Prestamos", "A1:S")
@@ -353,7 +364,7 @@ def get_loans_df():
 
     data = []
     for idx, row in enumerate(rows, start=1):
-        row = row + [""] * (19 - len(row))  # asegurar 19 columnas
+        row = row + [""] * (19 - len(row))
         (
             system_reg_date,
             loan_id_str,
@@ -386,19 +397,15 @@ def get_loans_df():
         except Exception:
             sequence = 1
 
-        try:
-            principal = float(str(principal_str).replace(",", "")) if principal_str else 0.0
-        except Exception:
-            principal = 0.0
-
-        try:
-            total_to_pay = float(str(total_to_pay_str).replace(",", "")) if total_to_pay_str else principal * 1.5
-        except Exception:
+        principal = parse_number(principal_str)
+        if total_to_pay_str:
+            total_to_pay = parse_number(total_to_pay_str)
+        else:
             total_to_pay = principal * 1.5
 
-        try:
-            weekly_payment = float(str(weekly_payment_str).replace(",", "")) if weekly_payment_str else (total_to_pay / 12 if total_to_pay else 0.0)
-        except Exception:
+        if weekly_payment_str:
+            weekly_payment = parse_number(weekly_payment_str)
+        else:
             weekly_payment = total_to_pay / 12 if total_to_pay else 0.0
 
         status = status or "activo"
@@ -447,21 +454,12 @@ def count_loans_for_phone(phone: str) -> int:
 
 
 def get_first_due_date(loan_date: date) -> date:
-    """
-    Regla:
-    - Siempre se paga en sábado.
-    - Si el préstamo se hace con al menos 3 días de anticipación al sábado (Dom-Mié),
-      el primer pago es ese mismo sábado.
-    - Si está "muy cerca" (Jue-Sáb), el primer pago es el sábado de arriba.
-    """
-    weekday = loan_date.weekday()  # lunes=0 ... domingo=6
-    days_to_this_saturday = (5 - weekday) % 7  # próximo sábado de ESTA semana
-
+    weekday = loan_date.weekday()
+    days_to_this_saturday = (5 - weekday) % 7
     if days_to_this_saturday >= 3:
         first = loan_date + timedelta(days=days_to_this_saturday)
     else:
         first = loan_date + timedelta(days=days_to_this_saturday + 7)
-
     return first
 
 
@@ -530,21 +528,15 @@ def create_loan_sheet_for_client(
     principal,
     loan_date,
 ):
-    """
-    Crea el registro de préstamo en la hoja 'Prestamos' y devuelve:
-    loan_id, weekly_payment, total_to_pay, sequence, first_due_date
-    """
     interest_rate = 0.5
     weeks = 12
     total_to_pay = principal * (1 + interest_rate)
     weekly_payment = total_to_pay / weeks
     first_due = get_first_due_date(loan_date)
 
-    # número de crédito para ese cliente
     prev_loans = count_loans_for_phone(phone)
     sequence = prev_loans + 1
 
-    # loan_id global
     loan_id = get_next_loan_id()
 
     append_loan_to_sheet(
@@ -612,7 +604,6 @@ def get_all_loans_with_status(status_filter=None):
 def get_payments_df():
     """
     Hoja: Pagos
-    Columnas (fila 1 en adelante):
     A created_at
     B loan_id
     C payment_date
@@ -633,10 +624,9 @@ def get_payments_df():
             loan_id = int(loan_id_str) if loan_id_str else None
         except Exception:
             loan_id = None
-        try:
-            amount = float(str(amount_str).replace(",", "")) if amount_str else 0.0
-        except Exception:
-            amount = 0.0
+
+        amount = parse_number(amount_str)
+
         data.append(
             {
                 "created_at": created_at,
@@ -680,7 +670,6 @@ def update_loan_status_if_paid_sheet(loan_id: int):
 
     total_paid = payments_df[payments_df["loan_id"] == loan_id]["amount"].sum()
     if total_paid >= total_to_pay - 0.01:
-        # marcar como cerrado
         row_index = int(row["row_index"])
         updated_values = [
             row["system_reg_date"],
@@ -711,7 +700,6 @@ def update_loan_status_if_paid_sheet(loan_id: int):
 def get_expenses_df():
     """
     Hoja: Gastos
-    Columnas (fila 1 en adelante):
     A created_at
     B expense_date
     C amount
@@ -721,16 +709,15 @@ def get_expenses_df():
     ensure_sheet_exists("Gastos")
     rows = read_sheet("Gastos", "A1:E")
     if not rows:
-        return pd.DataFrame(columns=["created_at", "expense_date", "amount", "category", "notes"])
+        return pd.DataFrame(
+            columns=["created_at", "expense_date", "amount", "category", "notes"]
+        )
 
     data = []
     for row in rows:
         row = row + [""] * (5 - len(row))
         created_at, expense_date_str, amount_str, category, notes = row[:5]
-        try:
-            amount = float(str(amount_str).replace(",", "")) if amount_str else 0.0
-        except Exception:
-            amount = 0.0
+        amount = parse_number(amount_str)
         data.append(
             {
                 "created_at": created_at,
@@ -843,7 +830,6 @@ def get_portfolio_growth_pct():
 # ================== UI HELPERS: TARJETAS KPI ==================
 
 def render_kpi_card(title, value, icon, bg_color, growth_pct=None, growth_label=""):
-    """Pinta una tarjeta cuadrada con icono, número y % pequeñito."""
     if growth_pct is not None and growth_label:
         sign = "+" if growth_pct >= 0 else ""
         color = "#4caf50" if growth_pct >= 0 else "#e53935"
@@ -885,17 +871,7 @@ def render_kpi_card(title, value, icon, bg_color, growth_pct=None, growth_label=
     st.markdown(card_html, unsafe_allow_html=True)
 
 
-# ================== PÁGINAS: REGISTRO, CLIENTES, ETC. ==================
-
-def get_first_due_date(loan_date: date) -> date:
-    weekday = loan_date.weekday()
-    days_to_this_saturday = (5 - weekday) % 7
-    if days_to_this_saturday >= 3:
-        first = loan_date + timedelta(days=days_to_this_saturday)
-    else:
-        first = loan_date + timedelta(days=days_to_this_saturday + 7)
-    return first
-
+# ================== PÁGINAS UI ==================
 
 def page_registro():
     st.subheader("Registro de crédito")
@@ -1134,7 +1110,6 @@ def page_registro():
             emergency_name = wizard_data["emergency_name"]
             emergency_phone = wizard_data["emergency_phone"]
 
-            # 1) Cliente
             upsert_client_sheet(
                 full_name=full_name,
                 phone=phone,
@@ -1148,7 +1123,6 @@ def page_registro():
                 accepts_terms=accepts_terms,
             )
 
-            # 2) Crédito
             loan_id, weekly_payment, total_to_pay, sequence, first_due = create_loan_sheet_for_client(
                 full_name=full_name,
                 phone=phone,
@@ -1310,7 +1284,6 @@ def page_registrar_pago():
         st.write(f"Pago semanal: ${loan['weekly_payment']:,.2f}")
         st.write(f"Estado: {loan['status']}")
 
-    # Rating
     st.markdown("---")
     st.subheader("Calificación del cliente")
 
@@ -1327,7 +1300,6 @@ def page_registrar_pago():
         update_client_rating_sheet(loan["phone"], new_rating)
         st.success("Calificación del cliente actualizada.")
 
-    # Resumen de pagos
     payments_df = get_payments_for_loan(selected_loan_id)
     total_pagado = payments_df["amount"].sum() if not payments_df.empty else 0.0
     restante = loan["total_to_pay"] - total_pagado
@@ -1504,7 +1476,6 @@ def page_financiera():
     pct_clients, has_clients_prev = get_clients_growth_pct()
     pct_portfolio, has_port_prev = get_portfolio_growth_pct()
 
-    # Bloque 1: clientes y cartera
     st.markdown("##### Clientes y cartera")
     col1, col2 = st.columns(2)
     with col1:
@@ -1542,7 +1513,6 @@ def page_financiera():
             "crec. cartera vs mes anterior",
         )
 
-    # Bloque 2: ingresos y pendientes
     st.markdown("##### Ingresos y pendientes")
     col5, col6 = st.columns(2)
     with col5:
@@ -1576,7 +1546,6 @@ def page_financiera():
             "#7f1d1d",
         )
 
-    # Bloque 3: posición financiera
     st.markdown("##### Posición financiera")
     col9, col10 = st.columns(2)
     with col9:
@@ -1624,11 +1593,9 @@ def main():
         layout="wide",
     )
 
-    # Aseguramos que existan todas las pestañas necesarias
     for title in ["Prestamos", "Clientes", "Pagos", "Gastos"]:
         ensure_sheet_exists(title)
 
-    # Título centrado
     st.markdown(
         """
         <h1 style="text-align:center; margin-bottom: 0;">🍋 The Lemonade Cash</h1>
@@ -1637,7 +1604,6 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # Menú principal en tarjetas
     if "main_section" not in st.session_state:
         st.session_state["main_section"] = "clientes"
 
