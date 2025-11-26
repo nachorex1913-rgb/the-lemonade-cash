@@ -113,6 +113,8 @@ def append_rows(title: str, rows, start_a1: str = "A1"):
         insertDataOption="INSERT_ROWS",
         body=body,
     ).execute()
+    # Limpiamos caché de datos porque se modificó el sheet
+    st.cache_data.clear()
 
 
 def update_row(title: str, row_index: int, values):
@@ -130,6 +132,7 @@ def update_row(title: str, row_index: int, values):
         valueInputOption="USER_ENTERED",
         body=body,
     ).execute()
+    st.cache_data.clear()
 
 
 # ================== HELPERS DE PARSEO SIMPLE ==================
@@ -140,6 +143,7 @@ def _bool_to_si(value):
 
 # ================== CLIENTES EN SHEETS ==================
 
+@st.cache_data(ttl=60)
 def get_clients_df():
     """
     Hoja: Clientes
@@ -196,6 +200,12 @@ def get_clients_df():
             rating,
         ) = row[:12]
 
+        # rating puede venir vacío o como texto
+        try:
+            rating_val = int(rating) if str(rating).strip() != "" else None
+        except Exception:
+            rating_val = None
+
         data.append(
             {
                 "phone": phone,
@@ -209,7 +219,7 @@ def get_clients_df():
                 "accepts_terms": accepts_terms,
                 "docs_url": docs_url,
                 "created_at": created_at,
-                "rating": int(rating) if str(rating).strip().isdigit() else None,
+                "rating": rating_val,
                 "row_index": idx,
             }
         )
@@ -310,6 +320,7 @@ def update_client_rating_sheet(phone: str, rating: int):
 
 # ================== PRÉSTAMOS EN SHEETS ==================
 
+@st.cache_data(ttl=60)
 def get_loans_df():
     """
     Hoja: Prestamos
@@ -601,25 +612,44 @@ def get_all_loans_with_status(status_filter=None):
 
 # ================== PAGOS EN SHEETS ==================
 
+@st.cache_data(ttl=60)
 def get_payments_df():
     """
     Hoja: Pagos
+
+    NUEVO FORMATO (recomendado):
+    A created_at
+    B loan_id
+    C phone
+    D full_name
+    E payment_date
+    F amount
+
+    FORMATO VIEJO (compatibilidad):
     A created_at
     B loan_id
     C payment_date
     D amount
     """
     ensure_sheet_exists("Pagos")
-    rows = read_sheet("Pagos", "A1:D")
+    rows = read_sheet("Pagos", "A1:F")
     if not rows:
         return pd.DataFrame(
-            columns=["created_at", "loan_id", "payment_date", "amount"]
+            columns=["created_at", "loan_id", "phone", "full_name", "payment_date", "amount"]
         )
 
     data = []
     for row in rows:
-        row = row + [""] * (4 - len(row))
-        created_at, loan_id_str, payment_date_str, amount_str = row[:4]
+        # soportar 4 o 6 columnas
+        if len(row) >= 6:
+            row = row + [""] * (6 - len(row))
+            created_at, loan_id_str, phone, full_name, payment_date_str, amount_str = row[:6]
+        else:
+            row = row + [""] * (4 - len(row))
+            created_at, loan_id_str, payment_date_str, amount_str = row[:4]
+            phone = ""
+            full_name = ""
+
         try:
             loan_id = int(loan_id_str) if loan_id_str else None
         except Exception:
@@ -631,6 +661,8 @@ def get_payments_df():
             {
                 "created_at": created_at,
                 "loan_id": loan_id,
+                "phone": phone,
+                "full_name": full_name,
                 "payment_date": payment_date_str,
                 "amount": amount,
             }
@@ -646,11 +678,13 @@ def get_payments_for_loan(loan_id: int):
     return df[df["loan_id"] == loan_id].sort_values("payment_date")
 
 
-def append_payment(loan_id: int, payment_date: date, amount: float):
+def append_payment(loan_id: int, payment_date: date, amount: float, phone: str, full_name: str):
     ensure_sheet_exists("Pagos")
     row = [
         date.today().isoformat(),
         loan_id,
+        phone,
+        full_name,
         payment_date.isoformat(),
         float(amount),
     ]
@@ -697,6 +731,7 @@ def update_loan_status_if_paid_sheet(loan_id: int):
 
 # ================== GASTOS EN SHEETS ==================
 
+@st.cache_data(ttl=60)
 def get_expenses_df():
     """
     Hoja: Gastos
@@ -1287,12 +1322,17 @@ def page_registrar_pago():
     st.markdown("---")
     st.subheader("Calificación del cliente")
 
-    current_rating = loan["rating"] if loan["rating"] is not None else 3
+    current_rating = loan["rating"]
+    if isinstance(current_rating, (int, float)) and not pd.isna(current_rating):
+        slider_default = int(current_rating)
+    else:
+        slider_default = 3
+
     new_rating = st.slider(
         "Calificación (1 a 5 estrellas)",
         min_value=1,
         max_value=5,
-        value=int(current_rating),
+        value=slider_default,
         help="Evalúa qué tan puntual y cumplido ha sido este cliente con sus pagos.",
     )
 
@@ -1342,7 +1382,7 @@ def page_registrar_pago():
             st.error("Debes marcar el check de pago recibido.")
             return
 
-        append_payment(selected_loan_id, payment_date, amount)
+        append_payment(selected_loan_id, payment_date, amount, loan["phone"], loan["full_name"])
         update_loan_status_if_paid_sheet(selected_loan_id)
         st.success(f"Pago de ${amount:,.2f} registrado.")
         st.rerun()
