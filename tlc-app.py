@@ -1,5 +1,4 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import date, timedelta
 
@@ -8,13 +7,11 @@ from googleapiclient.discovery import build
 
 # ================== CONFIGURACIÓN GENERAL ==================
 
-DB_NAME = "lemonade_cash.db"
-
-# Solo Sheets (Drive queda manual)
+# Solo Sheets (Drive lo manejas manualmente)
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # ID fijo de tu Google Sheet
-SPREADSHEET_ID_FIXED = "1tk1rm8h4ETGnmM4DwTDKGmaVnoGx-Q6MOmEcBUr5pTc"
+SPREADSHEET_ID = "1tk1rm8h4ETGnmM4DwTDKGmaVnoGx-Q6MOmEcBUr5pTc"
 
 # URL base de búsqueda en Google Drive por texto (para docs_url por teléfono)
 DRIVE_SEARCH_BASE_URL = "https://drive.google.com/drive/u/0/search?q="
@@ -29,7 +26,7 @@ DRIVE_FOLDER_URL = (
 INITIAL_CAPITAL = 1000.0
 
 
-# ================== GOOGLE SHEETS ==================
+# ================== GOOGLE SHEETS: CORE ==================
 
 def get_gcp_credentials():
     """Credenciales desde Streamlit Secrets (service account)."""
@@ -45,187 +42,170 @@ def get_sheets_service():
     return build("sheets", "v4", credentials=creds)
 
 
-def append_loan_to_sheet(
-    loan_id,
-    loan_date,
-    principal,
-    total_to_pay,
-    weekly_payment,
-    full_name,
-    phone,
-    address,
-    emergency_name,
-    emergency_phone,
-    has_12m_job,
-    is_recommended,
-    can_pay_weekly,
-    accepts_terms,
-    docs_url,
-    sequence,
-    first_due_date,
-):
-    """
-    Agrega una fila a Google Sheets con datos del crédito.
-    Usa el ID fijo de tu hoja de cálculo.
-    """
-
-    spreadsheet_id = SPREADSHEET_ID_FIXED
+def ensure_sheet_exists(title: str):
+    """Crea la pestaña si no existe todavía."""
     service = get_sheets_service()
+    spreadsheet = service.spreadsheets().get(
+        spreadsheetId=SPREADSHEET_ID
+    ).execute()
 
-    def yes_no(v):
-        return "SI" if v else "NO"
+    existing_titles = [s["properties"]["title"] for s in spreadsheet.get("sheets", [])]
+    if title in existing_titles:
+        return
 
-    values = [[
-        str(date.today()),               # Fecha de registro en el sistema
-        loan_id,                         # ID interno del crédito
-        sequence,                        # Número de crédito para ese cliente (1, 2, 3...)
-        loan_date.isoformat(),           # Fecha del préstamo
-        first_due_date.isoformat(),      # Fecha del primer pago (sábado según regla)
-        full_name,
-        phone,
-        address,
-        emergency_name,
-        emergency_phone,
-        yes_no(has_12m_job),
-        yes_no(is_recommended),
-        yes_no(can_pay_weekly),
-        yes_no(accepts_terms),
-        float(principal),
-        float(total_to_pay),
-        float(weekly_payment),
-        docs_url or "",
-    ]]
+    body = {
+        "requests": [
+            {
+                "addSheet": {"properties": {"title": title}}
+            }
+        ]
+    }
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SPREADSHEET_ID,
+        body=body,
+    ).execute()
 
-    body = {"values": values}
 
+def read_sheet(title: str, range_a1: str):
+    """
+    Lee un rango A1 de una pestaña y devuelve list-of-lists (sin encabezados).
+    Ejemplo: read_sheet("Clientes", "A2:L")
+    """
+    service = get_sheets_service()
+    try:
+        resp = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{title}!{range_a1}",
+        ).execute()
+    except Exception:
+        return []
+    return resp.get("values", [])
+
+
+def append_rows(title: str, rows, start_a1: str = "A1"):
+    """
+    Agrega filas al final de la pestaña.
+    'rows' es list-of-lists.
+    """
+    service = get_sheets_service()
+    body = {"values": rows}
     service.spreadsheets().values().append(
-        spreadsheetId=spreadsheet_id,
-        range="Prestamos!A1",  # pestaña "Prestamos"
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"{title}!{start_a1}",
         valueInputOption="USER_ENTERED",
         insertDataOption="INSERT_ROWS",
         body=body,
     ).execute()
 
 
-# ================== CÁLCULO DE FECHAS DE PAGO ==================
-
-def get_first_due_date(loan_date: date) -> date:
+def update_row(title: str, row_index: int, values):
     """
-    Regla:
-    - Siempre se paga en sábado.
-    - Si el préstamo se hace con al menos 3 días de anticipación al sábado (Dom, Lun, Mar, Mié),
-      el primer pago es ese mismo sábado.
-    - Si está "muy cerca" (Jue, Vie, Sáb), el primer pago es el sábado de arriba (una semana después).
+    Actualiza una fila específica (1-based) en una pestaña, desde la columna A.
+    row_index incluye encabezados (A1=1, A2=2, etc.).
     """
-    weekday = loan_date.weekday()  # lunes=0 ... domingo=6
-    days_to_this_saturday = (5 - weekday) % 7  # Próximo sábado de ESTA semana
-
-    if days_to_this_saturday >= 3:
-        # Hay margen suficiente → paga este sábado
-        first = loan_date + timedelta(days=days_to_this_saturday)
-    else:
-        # Muy cerca → paga el sábado de arriba
-        first = loan_date + timedelta(days=days_to_this_saturday + 7)
-
-    return first
-
-
-# ================== BASE DE DATOS (SQLite) ==================
-
-def get_connection():
-    return sqlite3.connect(DB_NAME, check_same_thread=False)
+    service = get_sheets_service()
+    end_col = chr(ord("A") + len(values) - 1)
+    range_a1 = f"{title}!A{row_index}:{end_col}{row_index}"
+    body = {"values": [values]}
+    service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=range_a1,
+        valueInputOption="USER_ENTERED",
+        body=body,
+    ).execute()
 
 
-def init_db():
-    with get_connection() as conn:
-        cursor = conn.cursor()
+# ================== HELPERS DE PARSEO ==================
 
-        # Tabla de clientes
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            full_name TEXT,
-            phone TEXT UNIQUE,
-            address TEXT,
-            emergency_name TEXT,
-            emergency_phone TEXT,
-            domicilio_path TEXT,
-            id_path TEXT,
-            has_12m_job INTEGER,
-            is_recommended INTEGER,
-            can_pay_weekly INTEGER,
-            accepts_terms INTEGER,
-            created_at TEXT,
-            rating INTEGER
-        );
-        """)
-
-        # Tabla de créditos
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS loans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id INTEGER,
-            loan_date TEXT,
-            principal REAL,
-            interest_rate REAL,
-            total_to_pay REAL,
-            weeks INTEGER,
-            weekly_payment REAL,
-            status TEXT,
-            first_due_date TEXT,
-            sequence INTEGER,
-            FOREIGN KEY(client_id) REFERENCES clients(id)
-        );
-        """)
-
-        # Tabla de pagos
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            loan_id INTEGER,
-            payment_date TEXT,
-            amount REAL,
-            created_at TEXT,
-            FOREIGN KEY(loan_id) REFERENCES loans(id)
-        );
-        """)
-
-        # Tabla de gastos operativos
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            expense_date TEXT,
-            amount REAL,
-            category TEXT,
-            notes TEXT,
-            created_at TEXT
-        );
-        """)
-
-        # --------- Migraciones: asegurar columnas nuevas ---------
-        cursor.execute("PRAGMA table_info(clients);")
-        existing_client_cols = {row[1] for row in cursor.fetchall()}
-        if "rating" not in existing_client_cols:
-            cursor.execute("ALTER TABLE clients ADD COLUMN rating INTEGER;")
-
-        cursor.execute("PRAGMA table_info(loans);")
-        existing_loan_cols = {row[1] for row in cursor.fetchall()}
-        if "first_due_date" not in existing_loan_cols:
-            cursor.execute("ALTER TABLE loans ADD COLUMN first_due_date TEXT;")
-        if "sequence" not in existing_loan_cols:
-            cursor.execute("ALTER TABLE loans ADD COLUMN sequence INTEGER;")
-
-        conn.commit()
+def _parse_si_bool(value):
+    """Convierte 'SI'/'NO' (u otros) a 1/0."""
+    return 1 if str(value).strip().upper() == "SI" else 0
 
 
-def get_client_by_phone(phone: str):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM clients WHERE phone = ?", (phone,))
-        return cursor.fetchone()
+def _bool_to_si(value):
+    return "SI" if value else "NO"
 
 
-def upsert_client(
+# ================== CLIENTES EN SHEETS ==================
+
+def get_clients_df():
+    """
+    Hoja: Clientes
+    Columnas (por fila, desde la fila 2):
+    A phone
+    B full_name
+    C address
+    D emergency_name
+    E emergency_phone
+    F has_12m_job (SI/NO)
+    G is_recommended (SI/NO)
+    H can_pay_weekly (SI/NO)
+    I accepts_terms (SI/NO)
+    J docs_url
+    K created_at
+    L rating (número o vacío)
+    """
+    ensure_sheet_exists("Clientes")
+    rows = read_sheet("Clientes", "A2:L")
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "phone",
+                "full_name",
+                "address",
+                "emergency_name",
+                "emergency_phone",
+                "has_12m_job",
+                "is_recommended",
+                "can_pay_weekly",
+                "accepts_terms",
+                "docs_url",
+                "created_at",
+                "rating",
+                "row_index",
+            ]
+        )
+
+    data = []
+    for idx, row in enumerate(rows, start=2):
+        row = row + [""] * (12 - len(row))  # Asegurar 12 columnas
+        (
+            phone,
+            full_name,
+            address,
+            emergency_name,
+            emergency_phone,
+            has_12m_job,
+            is_recommended,
+            can_pay_weekly,
+            accepts_terms,
+            docs_url,
+            created_at,
+            rating,
+        ) = row[:12]
+
+        data.append(
+            {
+                "phone": phone,
+                "full_name": full_name,
+                "address": address,
+                "emergency_name": emergency_name,
+                "emergency_phone": emergency_phone,
+                "has_12m_job": has_12m_job,
+                "is_recommended": is_recommended,
+                "can_pay_weekly": can_pay_weekly,
+                "accepts_terms": accepts_terms,
+                "docs_url": docs_url,
+                "created_at": created_at,
+                "rating": int(rating) if str(rating).strip().isdigit() else None,
+                "row_index": idx,
+            }
+        )
+
+    return pd.DataFrame(data)
+
+
+def upsert_client_sheet(
     full_name,
     phone,
     address,
@@ -238,58 +218,326 @@ def upsert_client(
     accepts_terms,
 ):
     """
-    Guardamos la URL de documentos (búsqueda en Drive) en domicilio_path e id_path,
-    y dejamos rating separado (para editarlo después).
+    Crea/actualiza cliente en la hoja 'Clientes' usando teléfono como llave.
+    Devuelve row_index (para referencia si se necesita).
     """
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        existing = get_client_by_phone(phone)
-        if existing:
-            client_id = existing[0]
-            cursor.execute("""
-                UPDATE clients
-                SET full_name = ?, address = ?, emergency_name = ?, emergency_phone = ?,
-                    domicilio_path = ?, id_path = ?, has_12m_job = ?, is_recommended = ?,
-                    can_pay_weekly = ?, accepts_terms = ?
-                WHERE phone = ?;
-            """, (
-                full_name, address, emergency_name, emergency_phone,
-                docs_url, docs_url, has_12m_job, is_recommended,
-                can_pay_weekly, accepts_terms, phone
-            ))
-        else:
-            cursor.execute("""
-                INSERT INTO clients (
-                    full_name, phone, address, emergency_name, emergency_phone,
-                    domicilio_path, id_path, has_12m_job, is_recommended,
-                    can_pay_weekly, accepts_terms, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATE('now'));
-            """, (
-                full_name, phone, address, emergency_name, emergency_phone,
-                docs_url, docs_url, has_12m_job, is_recommended,
-                can_pay_weekly, accepts_terms
-            ))
-            client_id = cursor.lastrowid
+    ensure_sheet_exists("Clientes")
+    df = get_clients_df()
 
-        conn.commit()
-        return client_id
+    has_12m_job_si = _bool_to_si(bool(has_12m_job))
+    is_recommended_si = _bool_to_si(bool(is_recommended))
+    can_pay_weekly_si = _bool_to_si(bool(can_pay_weekly))
+    accepts_terms_si = _bool_to_si(bool(accepts_terms))
+
+    created_at = date.today().isoformat()
+
+    if df.empty or phone not in df["phone"].values:
+        # Insertar nuevo
+        row = [
+            phone,
+            full_name,
+            address,
+            emergency_name,
+            emergency_phone,
+            has_12m_job_si,
+            is_recommended_si,
+            can_pay_weekly_si,
+            accepts_terms_si,
+            docs_url,
+            created_at,
+            "",  # rating vacío
+        ]
+        append_rows("Clientes", [row], "A1")
+        # Volvemos a leer para obtener row_index
+        df2 = get_clients_df()
+        row_info = df2[df2["phone"] == phone].iloc[0]
+        return int(row_info["row_index"])
+    else:
+        # Actualizar existente
+        row_info = df[df["phone"] == phone].iloc[0]
+        row_index = int(row_info["row_index"])
+        rating = row_info["rating"] if row_info["rating"] is not None else ""
+        created_at_existing = row_info["created_at"] or created_at
+
+        row = [
+            phone,
+            full_name,
+            address,
+            emergency_name,
+            emergency_phone,
+            has_12m_job_si,
+            is_recommended_si,
+            can_pay_weekly_si,
+            accepts_terms_si,
+            docs_url,
+            created_at_existing,
+            rating,
+        ]
+        update_row("Clientes", row_index, row)
+        return row_index
 
 
-def count_loans_for_client(client_id: int) -> int:
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM loans WHERE client_id = ?", (client_id,))
-        (count,) = cursor.fetchone()
-        return count
+def update_client_rating_sheet(phone: str, rating: int):
+    df = get_clients_df()
+    if df.empty or phone not in df["phone"].values:
+        return
+
+    row_info = df[df["phone"] == phone].iloc[0]
+    row_index = int(row_info["row_index"])
+
+    row = [
+        row_info["phone"],
+        row_info["full_name"],
+        row_info["address"],
+        row_info["emergency_name"],
+        row_info["emergency_phone"],
+        row_info["has_12m_job"],
+        row_info["is_recommended"],
+        row_info["can_pay_weekly"],
+        row_info["accepts_terms"],
+        row_info["docs_url"],
+        row_info["created_at"] or date.today().isoformat(),
+        rating,
+    ]
+    update_row("Clientes", row_index, row)
 
 
-def create_loan(client_id, principal, loan_date: date):
+# ================== PRÉSTAMOS EN SHEETS ==================
+
+def get_loans_df():
     """
-    Crea un crédito:
-    - 50% de interés
-    - 12 semanas
-    - Calcula fecha del primer pago (sábado)
-    - Asigna número de crédito (1°, 2°, 3°, ...) para ese cliente
+    Hoja: Prestamos
+    Columnas esperadas (fila 2 en adelante):
+    A system_reg_date
+    B loan_id (numérico)
+    C sequence
+    D loan_date
+    E first_due_date
+    F full_name
+    G phone
+    H address
+    I emergency_name
+    J emergency_phone
+    K has_12m_job (SI/NO)
+    L is_recommended (SI/NO)
+    M can_pay_weekly (SI/NO)
+    N accepts_terms (SI/NO)
+    O principal
+    P total_to_pay
+    Q weekly_payment
+    R docs_url
+    S status (activo/cerrado) [puede venir vacío]
+    """
+    ensure_sheet_exists("Prestamos")
+    rows = read_sheet("Prestamos", "A2:S")
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "system_reg_date",
+                "loan_id",
+                "sequence",
+                "loan_date",
+                "first_due_date",
+                "full_name",
+                "phone",
+                "address",
+                "emergency_name",
+                "emergency_phone",
+                "has_12m_job",
+                "is_recommended",
+                "can_pay_weekly",
+                "accepts_terms",
+                "principal",
+                "total_to_pay",
+                "weekly_payment",
+                "docs_url",
+                "status",
+                "row_index",
+            ]
+        )
+
+    data = []
+    for idx, row in enumerate(rows, start=2):
+        row = row + [""] * (19 - len(row))  # asegurar 19 columnas
+        (
+            system_reg_date,
+            loan_id_str,
+            sequence_str,
+            loan_date_str,
+            first_due_date_str,
+            full_name,
+            phone,
+            address,
+            emergency_name,
+            emergency_phone,
+            has_12m_job,
+            is_recommended,
+            can_pay_weekly,
+            accepts_terms,
+            principal_str,
+            total_to_pay_str,
+            weekly_payment_str,
+            docs_url,
+            status,
+        ) = row[:19]
+
+        try:
+            loan_id = int(loan_id_str) if loan_id_str else None
+        except Exception:
+            loan_id = None
+
+        try:
+            sequence = int(sequence_str) if sequence_str else 1
+        except Exception:
+            sequence = 1
+
+        try:
+            principal = float(str(principal_str).replace(",", "")) if principal_str else 0.0
+        except Exception:
+            principal = 0.0
+
+        try:
+            total_to_pay = float(str(total_to_pay_str).replace(",", "")) if total_to_pay_str else principal * 1.5
+        except Exception:
+            total_to_pay = principal * 1.5
+
+        try:
+            weekly_payment = float(str(weekly_payment_str).replace(",", "")) if weekly_payment_str else (total_to_pay / 12 if total_to_pay else 0.0)
+        except Exception:
+            weekly_payment = total_to_pay / 12 if total_to_pay else 0.0
+
+        status = status or "activo"
+
+        data.append(
+            {
+                "system_reg_date": system_reg_date,
+                "loan_id": loan_id,
+                "sequence": sequence,
+                "loan_date": loan_date_str,
+                "first_due_date": first_due_date_str,
+                "full_name": full_name,
+                "phone": phone,
+                "address": address,
+                "emergency_name": emergency_name,
+                "emergency_phone": emergency_phone,
+                "has_12m_job": has_12m_job,
+                "is_recommended": is_recommended,
+                "can_pay_weekly": can_pay_weekly,
+                "accepts_terms": accepts_terms,
+                "principal": principal,
+                "total_to_pay": total_to_pay,
+                "weekly_payment": weekly_payment,
+                "docs_url": docs_url,
+                "status": status,
+                "row_index": idx,
+            }
+        )
+
+    return pd.DataFrame(data)
+
+
+def get_next_loan_id():
+    df = get_loans_df()
+    if df.empty:
+        return 1
+    max_id = df["loan_id"].dropna().max()
+    return int(max_id) + 1 if pd.notna(max_id) else 1
+
+
+def count_loans_for_phone(phone: str) -> int:
+    df = get_loans_df()
+    if df.empty:
+        return 0
+    return int((df["phone"] == phone).sum())
+
+
+def get_first_due_date(loan_date: date) -> date:
+    """
+    Regla:
+    - Siempre se paga en sábado.
+    - Si el préstamo se hace con al menos 3 días de anticipación al sábado (Dom-Mié),
+      el primer pago es ese mismo sábado.
+    - Si está "muy cerca" (Jue-Sáb), el primer pago es el sábado de arriba.
+    """
+    weekday = loan_date.weekday()  # lunes=0 ... domingo=6
+    days_to_this_saturday = (5 - weekday) % 7  # próximo sábado de ESTA semana
+
+    if days_to_this_saturday >= 3:
+        first = loan_date + timedelta(days=days_to_this_saturday)
+    else:
+        first = loan_date + timedelta(days=days_to_this_saturday + 7)
+
+    return first
+
+
+def append_loan_to_sheet(
+    loan_id,
+    sequence,
+    loan_date,
+    first_due_date,
+    full_name,
+    phone,
+    address,
+    emergency_name,
+    emergency_phone,
+    has_12m_job,
+    is_recommended,
+    can_pay_weekly,
+    accepts_terms,
+    principal,
+    total_to_pay,
+    weekly_payment,
+    docs_url,
+):
+    ensure_sheet_exists("Prestamos")
+
+    system_reg_date = date.today().isoformat()
+    has_12m_job_si = _bool_to_si(bool(has_12m_job))
+    is_recommended_si = _bool_to_si(bool(is_recommended))
+    can_pay_weekly_si = _bool_to_si(bool(can_pay_weekly))
+    accepts_terms_si = _bool_to_si(bool(accepts_terms))
+
+    row = [
+        system_reg_date,
+        loan_id,
+        sequence,
+        loan_date.isoformat(),
+        first_due_date.isoformat(),
+        full_name,
+        phone,
+        address,
+        emergency_name,
+        emergency_phone,
+        has_12m_job_si,
+        is_recommended_si,
+        can_pay_weekly_si,
+        accepts_terms_si,
+        float(principal),
+        float(total_to_pay),
+        float(weekly_payment),
+        docs_url or "",
+        "activo",
+    ]
+    append_rows("Prestamos", [row], "A1")
+
+
+def create_loan_sheet_for_client(
+    full_name,
+    phone,
+    address,
+    emergency_name,
+    emergency_phone,
+    docs_url,
+    has_12m_job,
+    is_recommended,
+    can_pay_weekly,
+    accepts_terms,
+    principal,
+    loan_date,
+):
+    """
+    Crea el registro de préstamo en la hoja 'Prestamos' y devuelve:
+    loan_id, weekly_payment, total_to_pay, sequence, first_due_date
     """
     interest_rate = 0.5
     weeks = 12
@@ -297,233 +545,249 @@ def create_loan(client_id, principal, loan_date: date):
     weekly_payment = total_to_pay / weeks
     first_due = get_first_due_date(loan_date)
 
-    # Número de crédito para ese cliente
-    prev_loans = count_loans_for_client(client_id)
+    # número de crédito para ese cliente
+    prev_loans = count_loans_for_phone(phone)
     sequence = prev_loans + 1
 
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO loans (
-                client_id, loan_date, principal, interest_rate,
-                total_to_pay, weeks, weekly_payment, status,
-                first_due_date, sequence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'activo', ?, ?);
-        """, (
-            client_id, loan_date.isoformat(), principal, interest_rate,
-            total_to_pay, weeks, weekly_payment, first_due.isoformat(), sequence
-        ))
-        conn.commit()
-        return cursor.lastrowid, weekly_payment, total_to_pay, sequence, first_due
+    # loan_id global
+    loan_id = get_next_loan_id()
+
+    append_loan_to_sheet(
+        loan_id=loan_id,
+        sequence=sequence,
+        loan_date=loan_date,
+        first_due_date=first_due,
+        full_name=full_name,
+        phone=phone,
+        address=address,
+        emergency_name=emergency_name,
+        emergency_phone=emergency_phone,
+        has_12m_job=has_12m_job,
+        is_recommended=is_recommended,
+        can_pay_weekly=can_pay_weekly,
+        accepts_terms=accepts_terms,
+        principal=principal,
+        total_to_pay=total_to_pay,
+        weekly_payment=weekly_payment,
+        docs_url=docs_url,
+    )
+
+    return loan_id, weekly_payment, total_to_pay, sequence, first_due
 
 
 def search_loans_by_client(text: str):
-    like_pattern = f"%{text}%"
-    with get_connection() as conn:
-        query = """
-        SELECT
-            loans.id AS loan_id,
-            loans.sequence,
-            clients.full_name,
-            clients.phone,
-            loans.loan_date,
-            loans.first_due_date,
-            loans.principal,
-            loans.total_to_pay,
-            loans.weekly_payment,
-            loans.status
-        FROM loans
-        JOIN clients ON loans.client_id = clients.id
-        WHERE clients.phone LIKE ?
-           OR clients.full_name LIKE ?
-        ORDER BY loans.id DESC;
-        """
-        return pd.read_sql_query(query, conn, params=(like_pattern, like_pattern))
-
-
-def get_loan(loan_id: int):
-    with get_connection() as conn:
-        query = """
-        SELECT
-            loans.*,
-            clients.full_name,
-            clients.phone,
-            clients.address,
-            clients.domicilio_path,
-            clients.id_path,
-            clients.rating
-        FROM loans
-        JOIN clients ON loans.client_id = clients.id
-        WHERE loans.id = ?;
-        """
-        df = pd.read_sql_query(query, conn, params=(loan_id,))
+    df = get_loans_df()
     if df.empty:
+        return df
+
+    mask = df["phone"].astype(str).str.contains(text, case=False, na=False) | \
+           df["full_name"].astype(str).str.contains(text, case=False, na=False)
+    return df[mask].sort_values("loan_id", ascending=False)
+
+
+def get_loan_from_sheet(loan_id: int):
+    loans_df = get_loans_df()
+    if loans_df.empty or loan_id not in loans_df["loan_id"].values:
         return None
-    return df.iloc[0]
+
+    row = loans_df[loans_df["loan_id"] == loan_id].iloc[0]
+
+    clients_df = get_clients_df()
+    rating = None
+    if not clients_df.empty and row["phone"] in clients_df["phone"].values:
+        rating = clients_df[clients_df["phone"] == row["phone"]].iloc[0]["rating"]
+
+    loan_dict = row.to_dict()
+    loan_dict["rating"] = rating
+    return loan_dict
+
+
+def get_all_loans_with_status(status_filter=None):
+    df = get_loans_df()
+    if df.empty:
+        return df
+
+    if status_filter:
+        df = df[df["status"] == status_filter]
+    return df.sort_values("loan_id", ascending=False)
+
+
+# ================== PAGOS EN SHEETS ==================
+
+def get_payments_df():
+    """
+    Hoja: Pagos
+    Columnas (fila 2 en adelante):
+    A created_at
+    B loan_id
+    C payment_date
+    D amount
+    """
+    ensure_sheet_exists("Pagos")
+    rows = read_sheet("Pagos", "A2:D")
+    if not rows:
+        return pd.DataFrame(
+            columns=["created_at", "loan_id", "payment_date", "amount"]
+        )
+
+    data = []
+    for row in rows:
+        row = row + [""] * (4 - len(row))
+        created_at, loan_id_str, payment_date_str, amount_str = row[:4]
+        try:
+            loan_id = int(loan_id_str) if loan_id_str else None
+        except Exception:
+            loan_id = None
+        try:
+            amount = float(str(amount_str).replace(",", "")) if amount_str else 0.0
+        except Exception:
+            amount = 0.0
+        data.append(
+            {
+                "created_at": created_at,
+                "loan_id": loan_id,
+                "payment_date": payment_date_str,
+                "amount": amount,
+            }
+        )
+
+    return pd.DataFrame(data)
 
 
 def get_payments_for_loan(loan_id: int):
-    with get_connection() as conn:
-        return pd.read_sql_query(
-            "SELECT * FROM payments WHERE loan_id = ? ORDER BY payment_date;",
-            conn,
-            params=(loan_id,),
+    df = get_payments_df()
+    if df.empty:
+        return pd.DataFrame(columns=df.columns)
+    return df[df["loan_id"] == loan_id].sort_values("payment_date")
+
+
+def append_payment(loan_id: int, payment_date: date, amount: float):
+    ensure_sheet_exists("Pagos")
+    row = [
+        date.today().isoformat(),
+        loan_id,
+        payment_date.isoformat(),
+        float(amount),
+    ]
+    append_rows("Pagos", [row], "A1")
+
+
+def update_loan_status_if_paid_sheet(loan_id: int):
+    loans_df = get_loans_df()
+    if loans_df.empty or loan_id not in loans_df["loan_id"].values:
+        return
+
+    row = loans_df[loans_df["loan_id"] == loan_id].iloc[0]
+    total_to_pay = float(row["total_to_pay"])
+    payments_df = get_payments_df()
+    if payments_df.empty:
+        return
+
+    total_paid = payments_df[payments_df["loan_id"] == loan_id]["amount"].sum()
+    if total_paid >= total_to_pay - 0.01:
+        # marcar como cerrado
+        row_index = int(row["row_index"])
+        # reconstruir la fila completa para actualizar solo status
+        # para no perder otras columnas, usamos todos los campos de row
+        updated_values = [
+            row["system_reg_date"],
+            row["loan_id"],
+            row["sequence"],
+            row["loan_date"],
+            row["first_due_date"],
+            row["full_name"],
+            row["phone"],
+            row["address"],
+            row["emergency_name"],
+            row["emergency_phone"],
+            row["has_12m_job"],
+            row["is_recommended"],
+            row["can_pay_weekly"],
+            row["accepts_terms"],
+            row["principal"],
+            row["total_to_pay"],
+            row["weekly_payment"],
+            row["docs_url"],
+            "cerrado",
+        ]
+        update_row("Prestamos", row_index, updated_values)
+
+
+# ================== GASTOS EN SHEETS ==================
+
+def get_expenses_df():
+    """
+    Hoja: Gastos
+    Columnas (fila 2 en adelante):
+    A created_at
+    B expense_date
+    C amount
+    D category
+    E notes
+    """
+    ensure_sheet_exists("Gastos")
+    rows = read_sheet("Gastos", "A2:E")
+    if not rows:
+        return pd.DataFrame(columns=["created_at", "expense_date", "amount", "category", "notes"])
+
+    data = []
+    for row in rows:
+        row = row + [""] * (5 - len(row))
+        created_at, expense_date_str, amount_str, category, notes = row[:5]
+        try:
+            amount = float(str(amount_str).replace(",", "")) if amount_str else 0.0
+        except Exception:
+            amount = 0.0
+        data.append(
+            {
+                "created_at": created_at,
+                "expense_date": expense_date_str,
+                "amount": amount,
+                "category": category,
+                "notes": notes,
+            }
         )
+    return pd.DataFrame(data)
 
 
-def update_loan_status_if_paid(loan_id: int):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT total_to_pay FROM loans WHERE id = ?", (loan_id,))
-        row = cursor.fetchone()
-        if not row:
-            return
-        total_to_pay = row[0]
-
-        cursor.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE loan_id = ?",
-            (loan_id,),
-        )
-        (paid_sum,) = cursor.fetchone()
-
-        if paid_sum >= total_to_pay - 0.01:
-            cursor.execute(
-                "UPDATE loans SET status = 'cerrado' WHERE id = ?",
-                (loan_id,),
-            )
-
-        conn.commit()
+def append_expense(expense_date: date, amount: float, category: str, notes: str):
+    ensure_sheet_exists("Gastos")
+    row = [
+        date.today().isoformat(),
+        expense_date.isoformat(),
+        float(amount),
+        category,
+        notes,
+    ]
+    append_rows("Gastos", [row], "A1")
 
 
-def insert_payment(loan_id: int, payment_date: date, amount: float):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO payments (loan_id, payment_date, amount, created_at)
-            VALUES (?, ?, ?, DATE('now'));
-        """, (loan_id, payment_date.isoformat(), amount))
-        conn.commit()
-    update_loan_status_if_paid(loan_id)
-
-
-def get_all_clients():
-    with get_connection() as conn:
-        return pd.read_sql_query("SELECT * FROM clients ORDER BY id DESC;", conn)
-
-
-def get_all_loans_with_clients(status_filter=None):
-    with get_connection() as conn:
-        base_query = """
-        SELECT
-            loans.id AS loan_id,
-            loans.sequence,
-            clients.full_name,
-            clients.phone,
-            loans.loan_date,
-            loans.first_due_date,
-            loans.principal,
-            loans.total_to_pay,
-            loans.weekly_payment,
-            loans.status
-        FROM loans
-        JOIN clients ON loans.client_id = clients.id
-        """
-        if status_filter is None:
-            query = base_query + " ORDER BY loans.id DESC;"
-            return pd.read_sql_query(query, conn)
-        else:
-            query = base_query + " WHERE loans.status = ? ORDER BY loans.id DESC;"
-            return pd.read_sql_query(query, conn, params=(status_filter,))
-
-
-def update_client_rating(client_id: int, rating: int):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE clients SET rating = ? WHERE id = ?;",
-            (rating, client_id),
-        )
-        conn.commit()
-
-
-# ================== GASTOS OPERATIVOS ==================
-
-def insert_expense(expense_date: date, amount: float, category: str, notes: str):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO expenses (expense_date, amount, category, notes, created_at)
-            VALUES (?, ?, ?, ?, DATE('now'));
-        """, (expense_date.isoformat(), amount, category, notes))
-        conn.commit()
-
-
-def get_all_expenses():
-    with get_connection() as conn:
-        return pd.read_sql_query(
-            "SELECT * FROM expenses ORDER BY expense_date DESC, id DESC;",
-            conn
-        )
-
-
-# ================== RESUMEN FINANCIERO Y CRECIMIENTOS ==================
+# ================== RESUMEN FINANCIERO ==================
 
 def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
-    with get_connection() as conn:
-        cursor = conn.cursor()
+    clients_df = get_clients_df()
+    loans_df = get_loans_df()
+    payments_df = get_payments_df()
+    expenses_df = get_expenses_df()
 
-        # Clientes
-        cursor.execute("SELECT COUNT(*) FROM clients;")
-        (clientes_registrados,) = cursor.fetchone()
+    clientes_registrados = len(clients_df)
+    creditos_activos = len(loans_df[loans_df["status"] == "activo"]) if not loans_df.empty else 0
+    creditos_cerrados = len(loans_df[loans_df["status"] == "cerrado"]) if not loans_df.empty else 0
 
-        # Créditos activos
-        cursor.execute("SELECT COUNT(*) FROM loans WHERE status = 'activo';")
-        (creditos_activos,) = cursor.fetchone()
-
-        # Créditos finalizados
-        cursor.execute("SELECT COUNT(*) FROM loans WHERE status = 'cerrado';")
-        (creditos_cerrados,) = cursor.fetchone()
-
-        # Sumas de préstamos
-        cursor.execute("""
-            SELECT
-                COALESCE(SUM(principal), 0),
-                COALESCE(SUM(total_to_pay), 0)
-            FROM loans;
-        """)
-        principal_sum, total_to_pay_sum = cursor.fetchone()
-
-        # Pagos realizados
-        cursor.execute("""
-            SELECT COALESCE(SUM(amount), 0)
-            FROM payments;
-        """)
-        (total_pagado,) = cursor.fetchone()
-
-        # Gastos operativos
-        cursor.execute("""
-            SELECT COALESCE(SUM(amount), 0)
-            FROM expenses;
-        """)
-        (total_gastos,) = cursor.fetchone()
-
-    monto_total_prestado = principal_sum
-    total_a_cobrar = total_to_pay_sum
-    total_cobrado = total_pagado
-    total_gastos_operativos = total_gastos
+    monto_total_prestado = loans_df["principal"].sum() if not loans_df.empty else 0.0
+    total_a_cobrar = loans_df["total_to_pay"].sum() if not loans_df.empty else 0.0
+    total_cobrado = payments_df["amount"].sum() if not payments_df.empty else 0.0
+    total_gastos_operativos = expenses_df["amount"].sum() if not expenses_df.empty else 0.0
 
     intereses_teoricos = total_a_cobrar - monto_total_prestado
     monto_pendiente_por_recaudar = total_a_cobrar - total_cobrado
 
-    # Saldo en efectivo (caja) = capital inicial - prestado + cobrado - gastos
     saldo_efectivo = (
         initial_capital
         - monto_total_prestado
         + total_cobrado
         - total_gastos_operativos
     )
-
-    # Saldo total (caja + cartera por cobrar)
     saldo_total_cuenta = saldo_efectivo + monto_pendiente_por_recaudar
 
     return {
@@ -541,24 +805,21 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
 
 
 def get_clients_growth_pct():
-    """Crecimiento de número de clientes vs mes anterior."""
-    with get_connection() as conn:
-        df = pd.read_sql_query(
-            """
-            SELECT strftime('%Y-%m', created_at) AS month,
-                   COUNT(*) AS n
-            FROM clients
-            GROUP BY month
-            ORDER BY month;
-            """,
-            conn,
-        )
+    df = get_clients_df()
     if df.empty:
         return 0.0, False
-    if len(df) == 1:
+    # agrupar por mes de created_at
+    df = df[df["created_at"] != ""]
+    if df.empty:
         return 0.0, False
-    last = float(df.iloc[-1]["n"])
-    prev = float(df.iloc[-2]["n"])
+    df["month"] = df["created_at"].str.slice(0, 7)
+    grouped = df.groupby("month")["phone"].nunique().reset_index(name="n")
+
+    if len(grouped) < 2:
+        return 0.0, False
+
+    last = float(grouped.iloc[-1]["n"])
+    prev = float(grouped.iloc[-2]["n"])
     if prev == 0:
         return 0.0, False
     pct = (last - prev) / abs(prev) * 100.0
@@ -566,36 +827,77 @@ def get_clients_growth_pct():
 
 
 def get_portfolio_growth_pct():
-    """Crecimiento de cartera (principal prestado) vs mes anterior."""
-    with get_connection() as conn:
-        df = pd.read_sql_query(
-            """
-            SELECT strftime('%Y-%m', loan_date) AS month,
-                   SUM(principal) AS principal
-            FROM loans
-            GROUP BY month
-            ORDER BY month;
-            """,
-            conn,
-        )
-    if df.empty:
+    loans_df = get_loans_df()
+    if loans_df.empty:
         return 0.0, False
-    if len(df) == 1:
+    loans_df = loans_df[loans_df["loan_date"] != ""]
+    if loans_df.empty:
         return 0.0, False
-    last = float(df.iloc[-1]["principal"])
-    prev = float(df.iloc[-2]["principal"])
+    loans_df["month"] = loans_df["loan_date"].str.slice(0, 7)
+    grouped = loans_df.groupby("month")["principal"].sum().reset_index(name="principal")
+
+    if len(grouped) < 2:
+        return 0.0, False
+
+    last = float(grouped.iloc[-1]["principal"])
+    prev = float(grouped.iloc[-2]["principal"])
     if prev == 0:
         return 0.0, False
+
     pct = (last - prev) / abs(prev) * 100.0
     return pct, True
 
 
-# ================== PÁGINA: REGISTRO (por pasos) ==================
+# ================== UI HELPERS: TARJETAS KPI ==================
+
+def render_kpi_card(title, value, icon, bg_color, growth_pct=None, growth_label=""):
+    """Pinta una tarjeta cuadrada con icono, número y % pequeñito."""
+    if growth_pct is not None and growth_label:
+        sign = "+" if growth_pct >= 0 else ""
+        color = "#4caf50" if growth_pct >= 0 else "#e53935"
+        growth_html = (
+            f'<span style="color:{color}; font-weight:600;">'
+            f'{sign}{growth_pct:.1f}%</span> '
+            f'<span style="color:#9fb3c8;">{growth_label}</span>'
+        )
+    else:
+        growth_html = ""
+
+    card_html = f"""
+    <div style="
+        background:{bg_color};
+        border-radius:14px;
+        padding:10px 12px;
+        height:100%;
+        border:1px solid rgba(255,255,255,0.08);
+        display:flex;
+        flex-direction:column;
+        justify-content:space-between;
+    ">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+            <div style="font-size:0.75rem; color:#cfd8e3; font-weight:500;">
+                {title}
+            </div>
+            <div style="font-size:1rem;">
+                {icon}
+            </div>
+        </div>
+        <div style="margin-top:4px; font-size:1.1rem; font-weight:700; color:white;">
+            {value}
+        </div>
+        <div style="margin-top:3px; font-size:0.68rem;">
+            {growth_html}
+        </div>
+    </div>
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
+
+
+# ================== PÁGINAS: REGISTRO, CLIENTES, ETC. ==================
 
 def page_registro():
     st.subheader("Registro de crédito")
 
-    # Estado del wizard
     if "wizard_step" not in st.session_state:
         st.session_state["wizard_step"] = 1
     if "wizard_data" not in st.session_state:
@@ -604,11 +906,10 @@ def page_registro():
     step = st.session_state["wizard_step"]
     wizard_data = st.session_state["wizard_data"]
 
-    # Barra de avance
     st.progress(step / 3)
     st.caption(f"Paso {step} de 3")
 
-    # ----- PASO 1: Precalificación -----
+    # ----- PASO 1 -----
     if step == 1:
         st.markdown("### Paso 1: Precalificación")
 
@@ -697,7 +998,7 @@ def page_registro():
                 st.session_state["wizard_step"] = 2
                 st.rerun()
 
-    # ----- PASO 2: Registrar cliente -----
+    # ----- PASO 2 -----
     elif step == 2:
         st.markdown("### Paso 2: Datos del cliente")
 
@@ -755,7 +1056,7 @@ def page_registro():
                 st.session_state["wizard_step"] = 3
                 st.rerun()
 
-    # ----- PASO 3: Subir archivos (manual en Drive) y guardar -----
+    # ----- PASO 3 -----
     elif step == 3:
         st.markdown("### Paso 3: Subida de archivos y confirmación")
 
@@ -775,7 +1076,6 @@ def page_registro():
             "directamente en tu Google Drive."
         )
 
-        # Botón que abre la carpeta fija de Drive
         st.markdown(
             f"""
             <a href="{DRIVE_FOLDER_URL}" target="_blank">
@@ -819,13 +1119,12 @@ def page_registro():
                 st.error("Marca la casilla de confirmación de documentos para continuar.")
                 return
 
-            # Recuperamos datos del wizard
             principal = float(wizard_data["principal"])
             loan_date = wizard_data["loan_date"]
-            has_12m_job = int(wizard_data["has_12m_job"])
-            is_recommended = int(wizard_data["is_recommended"])
-            can_pay_weekly = int(wizard_data["can_pay_weekly"])
-            accepts_terms = int(wizard_data["accepts_terms"])
+            has_12m_job = bool(wizard_data["has_12m_job"])
+            is_recommended = bool(wizard_data["is_recommended"])
+            can_pay_weekly = bool(wizard_data["can_pay_weekly"])
+            accepts_terms = bool(wizard_data["accepts_terms"])
 
             full_name = wizard_data["full_name"]
             phone = wizard_data["phone"]
@@ -833,8 +1132,8 @@ def page_registro():
             emergency_name = wizard_data["emergency_name"]
             emergency_phone = wizard_data["emergency_phone"]
 
-            # Guardar / actualizar cliente
-            client_id = upsert_client(
+            # 1) Cliente
+            upsert_client_sheet(
                 full_name=full_name,
                 phone=phone,
                 address=address,
@@ -847,35 +1146,22 @@ def page_registro():
                 accepts_terms=accepts_terms,
             )
 
-            # Crear crédito
-            loan_id, weekly_payment, total_to_pay, sequence, first_due = create_loan(
-                client_id=client_id,
-                principal=principal,
-                loan_date=loan_date,
-            )
-
-            # Registrar en Google Sheets
-            append_loan_to_sheet(
-                loan_id=loan_id,
-                loan_date=loan_date,
-                principal=principal,
-                total_to_pay=total_to_pay,
-                weekly_payment=weekly_payment,
+            # 2) Crédito
+            loan_id, weekly_payment, total_to_pay, sequence, first_due = create_loan_sheet_for_client(
                 full_name=full_name,
                 phone=phone,
                 address=address,
                 emergency_name=emergency_name,
                 emergency_phone=emergency_phone,
-                has_12m_job=bool(has_12m_job),
-                is_recommended=bool(is_recommended),
-                can_pay_weekly=bool(can_pay_weekly),
-                accepts_terms=bool(accepts_terms),
                 docs_url=docs_url,
-                sequence=sequence,
-                first_due_date=first_due,
+                has_12m_job=has_12m_job,
+                is_recommended=is_recommended,
+                can_pay_weekly=can_pay_weekly,
+                accepts_terms=accepts_terms,
+                principal=principal,
+                loan_date=loan_date,
             )
 
-            # ✅ Mensaje de confirmación + resumen en azul
             st.success("Cliente y crédito registrados correctamente.")
 
             texto_resumen = (
@@ -899,45 +1185,68 @@ def page_registro():
                 st.rerun()
 
 
-# ================== PÁGINA: CLIENTES (solo vista) ==================
-
 def page_clientes():
     st.subheader("Base de clientes")
 
-    clients_df = get_all_clients()
-    if clients_df.empty:
+    df = get_clients_df()
+    if df.empty:
         st.info("No hay clientes registrados.")
         return
 
-    cols_to_show = ["id", "full_name", "phone", "address"]
-    if "rating" in clients_df.columns:
-        cols_to_show.append("rating")
-
+    cols = ["full_name", "phone", "address", "emergency_name", "emergency_phone", "rating"]
+    show_cols = [c for c in cols if c in df.columns]
     st.dataframe(
-        clients_df[cols_to_show],
+        df[show_cols],
         use_container_width=True,
         hide_index=True,
     )
 
-
-# ================== PÁGINA: CRÉDITOS ACTIVOS ==================
 
 def page_creditos_activos():
     st.subheader("Créditos activos")
 
-    loans_df = get_all_loans_with_clients(status_filter="activo")
-    if loans_df.empty:
+    df = get_all_loans_with_status("activo")
+    if df.empty:
         st.info("No hay créditos activos.")
         return
 
-    st.dataframe(
-        loans_df,
-        use_container_width=True,
-        hide_index=True,
-    )
+    show_cols = [
+        "loan_id",
+        "sequence",
+        "full_name",
+        "phone",
+        "loan_date",
+        "first_due_date",
+        "principal",
+        "total_to_pay",
+        "weekly_payment",
+        "status",
+    ]
+    st.dataframe(df[show_cols], use_container_width=True, hide_index=True)
 
 
-# ================== PÁGINA: REGISTRAR PAGO (con rating + datos extra) ==================
+def page_historial():
+    st.subheader("Historial de créditos (cerrados)")
+
+    df = get_all_loans_with_status("cerrado")
+    if df.empty:
+        st.info("No hay créditos cerrados todavía.")
+        return
+
+    show_cols = [
+        "loan_id",
+        "sequence",
+        "full_name",
+        "phone",
+        "loan_date",
+        "first_due_date",
+        "principal",
+        "total_to_pay",
+        "weekly_payment",
+        "status",
+    ]
+    st.dataframe(df[show_cols], use_container_width=True, hide_index=True)
+
 
 def page_registrar_pago():
     st.subheader("Registrar pago semanal")
@@ -956,7 +1265,19 @@ def page_registrar_pago():
         return
 
     st.markdown("#### Créditos encontrados")
-    st.dataframe(loans_df, use_container_width=True, hide_index=True)
+    show_cols = [
+        "loan_id",
+        "sequence",
+        "full_name",
+        "phone",
+        "loan_date",
+        "first_due_date",
+        "principal",
+        "total_to_pay",
+        "weekly_payment",
+        "status",
+    ]
+    st.dataframe(loans_df[show_cols], use_container_width=True, hide_index=True)
 
     loan_ids = loans_df["loan_id"].tolist()
     selected_loan_id = st.selectbox(
@@ -965,7 +1286,7 @@ def page_registrar_pago():
         format_func=lambda x: f"Crédito #{x}",
     )
 
-    loan = get_loan(selected_loan_id)
+    loan = get_loan_from_sheet(selected_loan_id)
     if loan is None:
         st.error("No se pudo cargar el crédito.")
         return
@@ -987,12 +1308,11 @@ def page_registrar_pago():
         st.write(f"Pago semanal: ${loan['weekly_payment']:,.2f}")
         st.write(f"Estado: {loan['status']}")
 
-    # Calificación del cliente (basada en puntualidad y pagos)
+    # Rating
     st.markdown("---")
     st.subheader("Calificación del cliente")
 
-    client_id = int(loan["client_id"])
-    current_rating = loan["rating"] if pd.notna(loan["rating"]) else 3
+    current_rating = loan["rating"] if loan["rating"] is not None else 3
     new_rating = st.slider(
         "Calificación (1 a 5 estrellas)",
         min_value=1,
@@ -1002,14 +1322,15 @@ def page_registrar_pago():
     )
 
     if st.button("Guardar calificación del cliente", key="btn_save_rating"):
-        update_client_rating(client_id, new_rating)
+        update_client_rating_sheet(loan["phone"], new_rating)
         st.success("Calificación del cliente actualizada.")
 
+    # Resumen de pagos
     payments_df = get_payments_for_loan(selected_loan_id)
     total_pagado = payments_df["amount"].sum() if not payments_df.empty else 0.0
     restante = loan["total_to_pay"] - total_pagado
 
-    weeks = int(loan["weeks"])
+    weeks = 12
     num_payments = len(payments_df)
     pagos_pendientes = max(weeks - num_payments, 0)
 
@@ -1046,29 +1367,12 @@ def page_registrar_pago():
         if not pago_ok:
             st.error("Debes marcar el check de pago recibido.")
             return
-        insert_payment(selected_loan_id, payment_date, amount)
+
+        append_payment(selected_loan_id, payment_date, amount)
+        update_loan_status_if_paid_sheet(selected_loan_id)
         st.success(f"Pago de ${amount:,.2f} registrado.")
         st.rerun()
 
-
-# ================== PÁGINA: HISTORIAL (CERRADOS) ==================
-
-def page_historial():
-    st.subheader("Historial de créditos (cerrados)")
-
-    loans_df = get_all_loans_with_clients(status_filter="cerrado")
-    if loans_df.empty:
-        st.info("No hay créditos cerrados todavía.")
-        return
-
-    st.dataframe(
-        loans_df,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
-# ================== PÁGINA: CALENDARIO DE PAGOS ==================
 
 def page_calendario():
     st.subheader("Calendario de pagos")
@@ -1087,7 +1391,19 @@ def page_calendario():
         return
 
     st.markdown("#### Créditos encontrados")
-    st.dataframe(loans_df, use_container_width=True, hide_index=True)
+    show_cols = [
+        "loan_id",
+        "sequence",
+        "full_name",
+        "phone",
+        "loan_date",
+        "first_due_date",
+        "principal",
+        "total_to_pay",
+        "weekly_payment",
+        "status",
+    ]
+    st.dataframe(loans_df[show_cols], use_container_width=True, hide_index=True)
 
     loan_ids = loans_df["loan_id"].tolist()
     selected_loan_id = st.selectbox(
@@ -1096,7 +1412,7 @@ def page_calendario():
         format_func=lambda x: f"Crédito #{x}",
     )
 
-    loan = get_loan(selected_loan_id)
+    loan = get_loan_from_sheet(selected_loan_id)
     if loan is None:
         st.error("No se pudo cargar el crédito.")
         return
@@ -1109,8 +1425,7 @@ def page_calendario():
     st.write(f"Primer pago (sábado): {loan.get('first_due_date', '')}")
     st.write(f"Pago semanal: ${loan['weekly_payment']:,.2f}")
 
-    # Construimos calendario de 12 semanas
-    weeks = int(loan["weeks"])
+    weeks = 12
     weekly_payment = float(loan["weekly_payment"])
     first_due_str = loan.get("first_due_date", None)
     if not first_due_str:
@@ -1145,8 +1460,6 @@ def page_calendario():
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
-# ================== PÁGINA: GASTOS OPERATIVOS ==================
-
 def page_gastos():
     st.subheader("Gastos operativos")
 
@@ -1165,13 +1478,13 @@ def page_gastos():
         if amount <= 0:
             st.error("El monto del gasto debe ser mayor a 0.")
         else:
-            insert_expense(expense_date, amount, category, notes)
+            append_expense(expense_date, amount, category, notes)
             st.success("Gasto operativo registrado correctamente.")
 
     st.markdown("---")
     st.markdown("#### Historial de gastos operativos")
 
-    expenses_df = get_all_expenses()
+    expenses_df = get_expenses_df()
     if expenses_df.empty:
         st.info("No hay gastos operativos registrados.")
     else:
@@ -1182,52 +1495,6 @@ def page_gastos():
         )
 
 
-# ================== PÁGINA: DASHBOARD FINANCIERO EN TARJETAS ==================
-
-def render_kpi_card(title, value, icon, bg_color, growth_pct=None, growth_label=""):
-    """Pinta una tarjeta cuadrada con icono, número y % pequeñito."""
-    # Preparar línea de crecimiento
-    if growth_pct is not None and growth_label:
-        sign = "+" if growth_pct >= 0 else ""
-        color = "#4caf50" if growth_pct >= 0 else "#e53935"
-        growth_html = (
-            f'<span style="color:{color}; font-weight:600;">'
-            f'{sign}{growth_pct:.1f}%</span> '
-            f'<span style="color:#9fb3c8;">{growth_label}</span>'
-        )
-    else:
-        growth_html = ""
-
-    card_html = f"""
-    <div style="
-        background:{bg_color};
-        border-radius:14px;
-        padding:10px 12px;
-        height:100%;
-        border:1px solid rgba(255,255,255,0.08);
-        display:flex;
-        flex-direction:column;
-        justify-content:space-between;
-    ">
-        <div style="display:flex; align-items:center; justify-content:space-between;">
-            <div style="font-size:0.75rem; color:#cfd8e3; font-weight:500;">
-                {title}
-            </div>
-            <div style="font-size:1rem;">
-                {icon}
-            </div>
-        </div>
-        <div style="margin-top:4px; font-size:1.1rem; font-weight:700; color:white;">
-            {value}
-        </div>
-        <div style="margin-top:3px; font-size:0.68rem;">
-            {growth_html}
-        </div>
-    </div>
-    """
-    st.markdown(card_html, unsafe_allow_html=True)
-
-
 def page_financiera():
     st.subheader("Dashboard financiero")
 
@@ -1235,9 +1502,8 @@ def page_financiera():
     pct_clients, has_clients_prev = get_clients_growth_pct()
     pct_portfolio, has_port_prev = get_portfolio_growth_pct()
 
-    # ----- Bloque 1: KPIs de clientes y cartera -----
+    # Bloque 1: clientes y cartera
     st.markdown("##### Clientes y cartera")
-
     col1, col2 = st.columns(2)
     with col1:
         render_kpi_card(
@@ -1274,9 +1540,8 @@ def page_financiera():
             "crec. cartera vs mes anterior",
         )
 
-    # ----- Bloque 2: Ingresos, intereses y pendientes -----
+    # Bloque 2: ingresos y pendientes
     st.markdown("##### Ingresos y pendientes")
-
     col5, col6 = st.columns(2)
     with col5:
         render_kpi_card(
@@ -1309,9 +1574,8 @@ def page_financiera():
             "#7f1d1d",
         )
 
-    # ----- Bloque 3: Posición de caja y saldo total -----
+    # Bloque 3: posición financiera
     st.markdown("##### Posición financiera")
-
     col9, col10 = st.columns(2)
     with col9:
         render_kpi_card(
@@ -1337,7 +1601,6 @@ def page_financiera():
             "#1e293b",
         )
     with col12:
-        # Tarjeta “mini” para mostrar ratios simples
         ratio_cobrado = (
             summary["total_cobrado"] / summary["monto_total_prestado"] * 100
             if summary["monto_total_prestado"] > 0 else 0
@@ -1350,7 +1613,7 @@ def page_financiera():
         )
 
 
-# ================== MAIN (HOME CON TARJETAS MÓVILES) ==================
+# ================== MAIN ==================
 
 def main():
     st.set_page_config(
@@ -1359,9 +1622,11 @@ def main():
         layout="wide",
     )
 
-    init_db()
+    # Aseguramos que existan todas las pestañas necesarias
+    for title in ["Prestamos", "Clientes", "Pagos", "Gastos"]:
+        ensure_sheet_exists(title)
 
-    # Título centrado (como en tu diseño)
+    # Título centrado
     st.markdown(
         """
         <h1 style="text-align:center; margin-bottom: 0;">🍋 The Lemonade Cash</h1>
@@ -1370,12 +1635,11 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # Menú principal por tarjetas
+    # Menú principal en tarjetas
     if "main_section" not in st.session_state:
         st.session_state["main_section"] = "clientes"
 
     col1, col2 = st.columns(2)
-
     with col1:
         if st.button("👥\nClientes", use_container_width=True):
             st.session_state["main_section"] = "clientes"
@@ -1395,7 +1659,6 @@ def main():
 
     section = st.session_state["main_section"]
 
-    # Subpestañas dentro de cada tarjeta
     if section == "clientes":
         tabs = st.tabs(["Registro", "Clientes", "Registrar pago"])
         with tabs[0]:
