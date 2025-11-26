@@ -231,8 +231,12 @@ def upsert_client_sheet(
 
     created_at = date.today().isoformat()
 
-    if df.empty or phone not in df["phone"].values:
+    # Normalizamos a string por si hubiera tipos raros (float, etc.)
+    existing_phones = df["phone"].astype(str).values if not df.empty else []
+
+    if df.empty or phone not in existing_phones:
         # Insertar nuevo
+        row_index = len(df) + 2  # encabezado en fila 1, datos desde 2
         row = [
             phone,
             full_name,
@@ -248,13 +252,10 @@ def upsert_client_sheet(
             "",  # rating vacío
         ]
         append_rows("Clientes", [row], "A1")
-        # Volvemos a leer para obtener row_index
-        df2 = get_clients_df()
-        row_info = df2[df2["phone"] == phone].iloc[0]
-        return int(row_info["row_index"])
+        return row_index
     else:
         # Actualizar existente
-        row_info = df[df["phone"] == phone].iloc[0]
+        row_info = df[df["phone"].astype(str) == str(phone)].iloc[0]
         row_index = int(row_info["row_index"])
         rating = row_info["rating"] if row_info["rating"] is not None else ""
         created_at_existing = row_info["created_at"] or created_at
@@ -279,10 +280,10 @@ def upsert_client_sheet(
 
 def update_client_rating_sheet(phone: str, rating: int):
     df = get_clients_df()
-    if df.empty or phone not in df["phone"].values:
+    if df.empty or phone not in df["phone"].astype(str).values:
         return
 
-    row_info = df[df["phone"] == phone].iloc[0]
+    row_info = df[df["phone"].astype(str) == str(phone)].iloc[0]
     row_index = int(row_info["row_index"])
 
     row = [
@@ -448,7 +449,7 @@ def count_loans_for_phone(phone: str) -> int:
     df = get_loans_df()
     if df.empty:
         return 0
-    return int((df["phone"] == phone).sum())
+    return int((df["phone"].astype(str) == str(phone)).sum())
 
 
 def get_first_due_date(loan_date: date) -> date:
@@ -687,8 +688,6 @@ def update_loan_status_if_paid_sheet(loan_id: int):
     if total_paid >= total_to_pay - 0.01:
         # marcar como cerrado
         row_index = int(row["row_index"])
-        # reconstruir la fila completa para actualizar solo status
-        # para no perder otras columnas, usamos todos los campos de row
         updated_values = [
             row["system_reg_date"],
             row["loan_id"],
@@ -808,7 +807,6 @@ def get_clients_growth_pct():
     df = get_clients_df()
     if df.empty:
         return 0.0, False
-    # agrupar por mes de created_at
     df = df[df["created_at"] != ""]
     if df.empty:
         return 0.0, False
