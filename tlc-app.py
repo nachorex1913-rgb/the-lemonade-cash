@@ -772,107 +772,10 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
     }
 
 
-# ===== NUEVO HELPER PARA CRECIMIENTOS MENSUALES ROBUSTOS =====
-
-def _monthly_growth_from_series(date_series, value_series):
-    """
-    Calcula crecimiento % mes vs mes anterior con fechas reales.
-
-    date_series: Serie de strings tipo fecha (YYYY-MM-DD)
-    value_series: Serie numérica (monto, conteo, etc.)
-    """
-    df = pd.DataFrame({"date": date_series, "value": value_series})
-
-    # Convertir a fecha real, ignorar basura
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"])
-    if df.empty:
-        return 0.0, False
-
-    # Agrupar por mes
-    df["month"] = df["date"].dt.to_period("M").astype(str)
-    grouped = (
-        df.groupby("month")["value"]
-        .sum()
-        .reset_index()
-        .sort_values("month")
-    )
-
-    # Ignorar meses con valor 0
-    grouped = grouped[grouped["value"] > 0]
-    if len(grouped) < 2:
-        return 0.0, False
-
-    last = float(grouped.iloc[-1]["value"])
-    prev = float(grouped.iloc[-2]["value"])
-
-    if prev <= 0:
-        return 0.0, False
-
-    pct = (last - prev) / prev * 100.0
-    return pct, True
-
-
-def get_clients_growth_pct():
-    df = get_clients_df()
-    if df.empty:
-        return 0.0, False
-
-    # Filtrar solo clientes con created_at "usable"
-    mask = df["created_at"].astype(str).str.len() >= 8
-    df = df[mask]
-    if df.empty:
-        return 0.0, False
-
-    # Conteo de clientes únicos por día (luego se agrupa en el helper por mes)
-    daily = (
-        df.groupby("created_at")["phone"]
-        .nunique()
-        .reset_index(name="n")
-    )
-
-    return _monthly_growth_from_series(
-        daily["created_at"],
-        daily["n"],
-    )
-
-
-def get_portfolio_growth_pct():
-    loans_df = get_loans_df()
-    if loans_df.empty:
-        return 0.0, False
-
-    mask = loans_df["loan_date"].astype(str).str.len() >= 8
-    loans_df = loans_df[mask]
-    if loans_df.empty:
-        return 0.0, False
-
-    daily = (
-        loans_df.groupby("loan_date")["principal"]
-        .sum()
-        .reset_index(name="principal")
-    )
-
-    return _monthly_growth_from_series(
-        daily["loan_date"],
-        daily["principal"],
-    )
-
-
 # ================== UI HELPERS: TARJETAS KPI ==================
 
 def render_kpi_card(title, value, icon, bg_color, growth_pct=None, growth_label=""):
-    if growth_pct is not None and growth_label:
-        sign = "+" if growth_pct >= 0 else ""
-        color = "#4caf50" if growth_pct >= 0 else "#e53935"
-        growth_html = (
-            f'<span style="color:{color}; font-weight:600;">'
-            f'{sign}{growth_pct:.1f}%</span> '
-            f'<span style="color:#9fb3c8;">{growth_label}</span>'
-        )
-    else:
-        growth_html = ""
-
+    # Ya no usamos growth_pct / growth_label, pero los dejamos opcionales
     card_html = f"""
     <div style="
         background:{bg_color};
@@ -894,9 +797,6 @@ def render_kpi_card(title, value, icon, bg_color, growth_pct=None, growth_label=
         </div>
         <div style="margin-top:4px; font-size:1.1rem; font-weight:700; color:white;">
             {value}
-        </div>
-        <div style="margin-top:3px; font-size:0.68rem;">
-            {growth_html}
         </div>
     </div>
     """
@@ -1518,129 +1418,77 @@ def page_gastos():
 
 # ================== PÁGINAS: DASHBOARD FINANCIERO ==================
 
-# ================== PÁGINAS: DASHBOARD FINANCIERO ==================
-
 def page_financiera():
     st.subheader("Dashboard financiero")
 
     summary = get_financial_summary(INITIAL_CAPITAL)
-    pct_clients, has_clients_prev = get_clients_growth_pct()
-    pct_portfolio, has_port_prev = get_portfolio_growth_pct()
 
-    # Etiquetas según haya o no histórico
-    label_clients = (
-        "vs mes anterior" if has_clients_prev else "Sin histórico (solo mes actual)"
-    )
-    label_portfolio = (
-        "crec. cartera vs mes anterior" if has_port_prev else "Sin histórico (solo mes actual)"
-    )
+    # ===== KPIs numéricos (separados de las tarjetas) =====
+    st.markdown("##### KPIs principales")
 
-    st.markdown("##### Clientes y cartera")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Clientes registrados", summary["clientes_registrados"])
+    with c2:
+        st.metric("Créditos activos", summary["creditos_activos"])
+    with c3:
+        st.metric("Créditos cerrados", summary["creditos_cerrados"])
+
+    c4, c5, c6 = st.columns(3)
+    with c4:
+        st.metric("Cartera prestada", f"${summary['monto_total_prestado']:,.2f}")
+    with c5:
+        st.metric("Total cobrado", f"${summary['total_cobrado']:,.2f}")
+    with c6:
+        st.metric("Pendiente por recaudar", f"${summary['monto_pendiente_por_recaudar']:,.2f}")
+
+    # ===== Tarjetas visuales de resumen =====
+    st.markdown("##### Resumen visual")
+
     col1, col2 = st.columns(2)
     with col1:
-        render_kpi_card(
-            "Clientes registrados",
-            f"{summary['clientes_registrados']}",
-            "👥",
-            "#064e3b",
-            pct_clients if has_clients_prev else 0.0,
-            label_clients,
-        )
-    with col2:
-        render_kpi_card(
-            "Créditos activos",
-            f"{summary['creditos_activos']}",
-            "💳",
-            "#1d4ed8",
-        )
-
-    col3, col4 = st.columns(2)
-    with col3:
-        render_kpi_card(
-            "Créditos finalizados",
-            f"{summary['creditos_cerrados']}",
-            "📁",
-            "#312e81",
-        )
-    with col4:
-        render_kpi_card(
-            "Cartera prestada",
-            f"${summary['monto_total_prestado']:,.2f}",
-            "💰",
-            "#7c2d12",
-            pct_portfolio if has_port_prev else 0.0,
-            label_portfolio,
-        )
-
-    st.markdown("##### Ingresos y pendientes")
-    col5, col6 = st.columns(2)
-    with col5:
-        render_kpi_card(
-            "Total cobrado",
-            f"${summary['total_cobrado']:,.2f}",
-            "📥",
-            "#075985",
-        )
-    with col6:
         render_kpi_card(
             "Intereses teóricos",
             f"${summary['intereses_teoricos']:,.2f}",
             "📈",
             "#4a044e",
         )
-
-    col7, col8 = st.columns(2)
-    with col7:
+    with col2:
         render_kpi_card(
-            "Pendiente por recaudar",
-            f"${summary['monto_pendiente_por_recaudar']:,.2f}",
-            "⌛",
-            "#3b0764",
-        )
-    with col8:
-        render_kpi_card(
-            "Gastos operativos",
+            "Gastos operativos acumulados",
             f"${summary['total_gastos_operativos']:,.2f}",
             "💸",
             "#7f1d1d",
         )
 
-    st.markdown("##### Posición financiera")
-    col9, col10 = st.columns(2)
-    with col9:
-        render_kpi_card(
-            "Saldo inicial",
-            f"${INITIAL_CAPITAL:,.2f}",
-            "🏦",
-            "#083344",
-        )
-    with col10:
+    col3, col4 = st.columns(2)
+    with col3:
         render_kpi_card(
             "Saldo en efectivo (caja)",
             f"${summary['saldo_efectivo']:,.2f}",
             "🧾",
             "#14532d",
         )
-
-    col11, col12 = st.columns(2)
-    with col11:
+    with col4:
         render_kpi_card(
             "Saldo total de la cuenta",
             f"${summary['saldo_total_cuenta']:,.2f}",
             "📊",
             "#1e293b",
         )
-    with col12:
-        ratio_cobrado = (
-            summary["total_cobrado"] / summary["total_a_cobrar"] * 100
-            if summary["total_a_cobrar"] > 0 else 0
-        )
-        render_kpi_card(
-            "Cobrado vs total a cobrar",
-            f"{ratio_cobrado:.1f}%",
-            "✅",
-            "#0f172a",
-        )
+
+    # KPI extra de ratio cobrado (no comparativo, solo indicador)
+    ratio_cobrado = (
+        summary["total_cobrado"] / summary["total_a_cobrar"] * 100
+        if summary["total_a_cobrar"] > 0 else 0
+    )
+    st.markdown("##### Indicador de recuperación")
+    render_kpi_card(
+        "Cobrado vs total a cobrar",
+        f"{ratio_cobrado:.1f}%",
+        "✅",
+        "#0f172a",
+    )
 
 
 # ================== MAIN ==================
