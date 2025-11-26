@@ -1,4 +1,4 @@
-import streamlit as st 
+import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
 
@@ -160,7 +160,7 @@ def get_clients_df():
     I accepts_terms (SI/NO)
     J docs_url
     K created_at
-    L rating
+    L rating (promedio tipo Google)
     """
     ensure_sheet_exists("Clientes")
     rows = read_sheet("Clientes", "A1:L")
@@ -817,7 +817,7 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
     }
 
 
-# ================== UI HELPERS: TARJETAS KPI ==================
+# ================== UI HELPERS ==================
 
 def render_kpi_card(title, value, icon, bg_color):
     card_html = f"""
@@ -841,6 +841,44 @@ def render_kpi_card(title, value, icon, bg_color):
         </div>
         <div style="margin-top:4px; font-size:1.1rem; font-weight:700; color:white;">
             {value}
+        </div>
+    </div>
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
+
+
+def render_progress_card(loan_row, total_pagado, porcentaje):
+    restante = float(loan_row["total_to_pay"]) - total_pagado
+    if restante < 0:
+        restante = 0.0
+    porcentaje = max(0.0, min(porcentaje, 100.0))
+
+    card_html = f"""
+    <div style="
+        background:#020617;
+        border-radius:16px;
+        padding:14px 16px;
+        margin-bottom:12px;
+        border:1px solid rgba(148, 163, 184, 0.3);
+    ">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <div style="font-weight:600; color:#e5e7eb;">
+                Crédito #{loan_row['loan_id']} · {loan_row['full_name']}
+            </div>
+            <div style="font-size:0.8rem; color:#9ca3af;">
+                {loan_row['phone']}
+            </div>
+        </div>
+        <div style="font-size:0.8rem; color:#9ca3af; margin-bottom:6px;">
+            Prestado: ${loan_row['principal']:,.2f} · Total a pagar: ${loan_row['total_to_pay']:,.2f}
+        </div>
+        <div style="width:100%; background:#111827; border-radius:999px; overflow:hidden; height:10px; margin-bottom:6px;">
+            <div style="height:100%; width:{porcentaje:.1f}%; background:#16a34a;"></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:#9ca3af;">
+            <span>Pagado: ${total_pagado:,.2f}</span>
+            <span>Pendiente: ${restante:,.2f}</span>
+            <span>{porcentaje:.1f}%</span>
         </div>
     </div>
     """
@@ -1456,6 +1494,47 @@ def page_calendario():
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
+# ================== PÁGINAS: PROGRESO CRÉDITOS (TARJETAS) ==================
+
+def page_progreso_creditos():
+    st.subheader("Progreso de créditos activos")
+
+    loans_df = get_all_loans_with_status("activo")
+    if loans_df.empty:
+        st.info("No hay créditos activos.")
+        return
+
+    search_text = st.text_input(
+        "Buscar por nombre o teléfono (opcional):",
+        key="search_progreso"
+    )
+
+    if search_text:
+        mask = loans_df["phone"].astype(str).str.contains(search_text, case=False, na=False) | \
+               loans_df["full_name"].astype(str).str.contains(search_text, case=False, na=False)
+        loans_df = loans_df[mask]
+
+    if loans_df.empty:
+        st.warning("No se encontraron créditos activos con ese criterio.")
+        return
+
+    payments_df = get_payments_df()
+
+    for _, loan_row in loans_df.iterrows():
+        if payments_df.empty:
+            total_pagado = 0.0
+        else:
+            total_pagado = payments_df[payments_df["loan_id"] == loan_row["loan_id"]]["amount"].sum()
+
+        total_to_pay = float(loan_row["total_to_pay"])
+        if total_to_pay > 0:
+            porcentaje = (total_pagado / total_to_pay) * 100.0
+        else:
+            porcentaje = 0.0
+
+        render_progress_card(loan_row, total_pagado, porcentaje)
+
+
 # ================== PÁGINAS: GASTOS ==================
 
 def page_gastos():
@@ -1629,7 +1708,6 @@ def page_financiera():
             "#083344",
         )
     with col10:
-        # Intereses teóricos duplicados en esta sección como pediste
         render_kpi_card(
             "Intereses teóricos (otra vista)",
             f"${summary['intereses_teoricos']:,.2f}",
@@ -1736,13 +1814,15 @@ def main():
     section = st.session_state["main_section"]
 
     if section == "clientes":
-        tabs = st.tabs(["Registro", "Clientes", "Registrar pago"])
+        tabs = st.tabs(["Registro", "Clientes", "Registrar pago", "Progreso créditos"])
         with tabs[0]:
             page_registro()
         with tabs[1]:
             page_clientes()
         with tabs[2]:
             page_registrar_pago()
+        with tabs[3]:
+            page_progreso_creditos()
 
     elif section == "creditos":
         tabs = st.tabs(["Créditos activos", "Historial", "Calendario de pagos"])
