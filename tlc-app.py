@@ -206,7 +206,6 @@ def get_clients_df():
         except Exception:
             rating_val = None
 
-
         data.append(
             {
                 "phone": phone,
@@ -294,7 +293,7 @@ def upsert_client_sheet(
         return row_index
 
 
-def update_client_rating_sheet(phone: str, rating: int):
+def update_client_rating_sheet(phone: str, rating):
     df = get_clients_df()
     if df.empty or str(phone) not in df["phone"].astype(str).values:
         return
@@ -317,6 +316,30 @@ def update_client_rating_sheet(phone: str, rating: int):
         rating,
     ]
     update_row("Clientes", row_index, row)
+
+
+def recompute_client_rating_from_payments(phone: str):
+    """
+    Recalcula el promedio de calificaciones de un cliente
+    usando todas las calificaciones de la hoja Pagos,
+    y actualiza la hoja Clientes con ese promedio.
+    """
+    payments_df = get_payments_df()
+    if payments_df.empty:
+        return
+
+    mask = payments_df["phone"].astype(str) == str(phone)
+    client_payments = payments_df[mask]
+
+    if client_payments.empty or "rating" not in client_payments.columns:
+        return
+
+    ratings = client_payments["rating"].dropna()
+    if ratings.empty:
+        return
+
+    avg_rating = ratings.mean()  # promedio tipo Google (ej. 4.3)
+    update_client_rating_sheet(phone, avg_rating)
 
 
 # ================== PRÉSTAMOS EN SHEETS ==================
@@ -594,33 +617,36 @@ def get_payments_df():
     """
     Hoja: Pagos
 
-    NUEVO FORMATO:
+    NUEVO FORMATO (7 columnas):
     A created_at
     B loan_id
     C phone
     D full_name
     E payment_date
     F amount
+    G rating
 
-    COMPATIBLE con registros viejos de 4 columnas.
+    Compatible con registros viejos que solo tengan 4 o 6 columnas.
     """
     ensure_sheet_exists("Pagos")
-    rows = read_sheet("Pagos", "A1:F")
+    rows = read_sheet("Pagos", "A1:G")
     if not rows:
         return pd.DataFrame(
-            columns=["created_at", "loan_id", "phone", "full_name", "payment_date", "amount"]
+            columns=["created_at", "loan_id", "phone", "full_name", "payment_date", "amount", "rating"]
         )
 
     data = []
     for row in rows:
-        if len(row) >= 6:
-            row = row + [""] * (6 - len(row))
-            created_at, loan_id_str, phone, full_name, payment_date_str, amount_str = row[:6]
-        else:
-            row = row + [""] * (4 - len(row))
-            created_at, loan_id_str, payment_date_str, amount_str = row[:4]
-            phone = ""
-            full_name = ""
+        # Normalizamos a 7 columnas
+        row = row + [""] * (7 - len(row))
+
+        created_at = row[0]
+        loan_id_str = row[1]
+        phone = row[2] if len(row) >= 3 else ""
+        full_name = row[3] if len(row) >= 4 else ""
+        payment_date_str = row[4] if len(row) >= 5 else ""
+        amount_str = row[5] if len(row) >= 6 else ""
+        rating_str = row[6] if len(row) >= 7 else ""
 
         try:
             loan_id = int(loan_id_str) if loan_id_str else None
@@ -628,6 +654,11 @@ def get_payments_df():
             loan_id = None
 
         amount = parse_number(amount_str)
+
+        try:
+            rating = parse_number(rating_str) if str(rating_str).strip() != "" else None
+        except Exception:
+            rating = None
 
         data.append(
             {
@@ -637,6 +668,7 @@ def get_payments_df():
                 "full_name": full_name,
                 "payment_date": payment_date_str,
                 "amount": amount,
+                "rating": rating,
             }
         )
 
@@ -650,15 +682,16 @@ def get_payments_for_loan(loan_id: int):
     return df[df["loan_id"] == loan_id].sort_values("payment_date")
 
 
-def append_payment(loan_id: int, payment_date: date, amount: float, phone: str, full_name: str):
+def append_payment(loan_id: int, payment_date: date, amount: float, phone: str, full_name: str, rating: int):
     ensure_sheet_exists("Pagos")
     row = [
-        date.today().isoformat(),
-        loan_id,
-        phone,
-        full_name,
-        payment_date.isoformat(),
-        float(amount),
+        date.today().isoformat(),      # A created_at
+        loan_id,                       # B loan_id
+        phone,                         # C phone
+        full_name,                     # D full_name
+        payment_date.isoformat(),      # E payment_date
+        float(amount),                 # F amount
+        int(rating),                   # G rating (1 a 5)
     ]
     append_rows("Pagos", [row], "A1")
 
@@ -1236,24 +1269,32 @@ def page_registrar_pago():
     st.markdown("---")
     st.subheader("Calificación del cliente")
 
-    current_rating = loan["rating"]
-    if isinstance(current_rating, (int, float)) and not pd.isna(current_rating):
-        slider_default = int(current_rating)
+    # ===== Promedio tipo Google Reviews basado en pagos =====
+    payments_all = get_payments_df()
+    avg_rating = None
+    num_ratings = 0
+
+    if not payments_all.empty and "rating" in payments_all.columns:
+        mask = payments_all["phone"].astype(str) == str(loan["phone"])
+        client_payments = payments_all[mask]
+        if not client_payments.empty:
+            ratings = client_payments["rating"].dropna()
+            if not ratings.empty:
+                avg_rating = ratings.mean()
+                num_ratings = len(ratings)
+
+    if avg_rating is not None:
+        rounded = round(avg_rating * 2) / 2
+        full_stars = int(round(rounded))
+        stars = "⭐" * full_stars + "☆" * (5 - full_stars)
+        st.markdown(
+            f"**Promedio:** {avg_rating:.1f} / 5.0  {stars}  \n"
+            f"_Basado en {num_ratings} calificación(es) de pagos._"
+        )
     else:
-        slider_default = 3
+        st.info("Este cliente aún no tiene calificaciones registradas en sus pagos.")
 
-    new_rating = st.slider(
-        "Calificación (1 a 5 estrellas)",
-        min_value=1,
-        max_value=5,
-        value=slider_default,
-        help="Evalúa qué tan puntual y cumplido ha sido este cliente con sus pagos.",
-    )
-
-    if st.button("Guardar calificación del cliente", key="btn_save_rating"):
-        update_client_rating_sheet(loan["phone"], new_rating)
-        st.success("Calificación del cliente actualizada.")
-
+    # ===== Resumen de pagos del crédito =====
     payments_df = get_payments_for_loan(selected_loan_id)
     total_pagado = payments_df["amount"].sum() if not payments_df.empty else 0.0
     restante = loan["total_to_pay"] - total_pagado
@@ -1278,17 +1319,33 @@ def page_registrar_pago():
     st.write(f"Saldo pendiente: ${restante:,.2f}")
 
     if not payments_df.empty:
+        cols_to_show = ["payment_date", "amount"]
+        if "rating" in payments_df.columns:
+            cols_to_show.append("rating")
         st.dataframe(
-            payments_df[["payment_date", "amount"]],
+            payments_df[cols_to_show],
             use_container_width=True,
             hide_index=True,
         )
 
+    # ===== Nuevo pago (SIEMPRE CON CALIFICACIÓN) =====
     st.subheader("Nuevo pago")
     with st.form("form_pago"):
         pago_ok = st.checkbox("Pago semanal recibido")
         payment_date = st.date_input("Fecha del pago", value=date.today())
         amount = float(loan["weekly_payment"])
+
+        new_rating = st.slider(
+            "Calificación de este pago (1 a 5 estrellas)",
+            min_value=1,
+            max_value=5,
+            value=5,
+            help=(
+                "Evalúa la puntualidad y capacidad de pago observada "
+                "en este pago específico."
+            ),
+        )
+
         submitted = st.form_submit_button("Guardar pago")
 
     if submitted:
@@ -1296,9 +1353,18 @@ def page_registrar_pago():
             st.error("Debes marcar el check de pago recibido.")
             return
 
-        append_payment(selected_loan_id, payment_date, amount, loan["phone"], loan["full_name"])
+        append_payment(
+            selected_loan_id,
+            payment_date,
+            amount,
+            loan["phone"],
+            loan["full_name"],
+            new_rating,
+        )
         update_loan_status_if_paid_sheet(selected_loan_id)
-        st.success(f"Pago de ${amount:,.2f} registrado.")
+        recompute_client_rating_from_payments(loan["phone"])
+
+        st.success(f"Pago de ${amount:,.2f} registrado con calificación {new_rating} estrellas.")
         safe_rerun()
 
 
@@ -1523,10 +1589,10 @@ def page_financiera():
     col5, col6 = st.columns(2)
     with col5:
         render_kpi_card(
-            "Total cobrado",
-            f"${summary['total_cobrado']:,.2f}",
-            "📥",
-            "#075985",
+            "Cartera prestada",
+            f"${summary['monto_total_prestado']:,.2f}",
+            "💰",
+            "#7c2d12",
         )
     with col6:
         render_kpi_card(
@@ -1539,10 +1605,10 @@ def page_financiera():
     col7, col8 = st.columns(2)
     with col7:
         render_kpi_card(
-            "Cartera prestada",
-            f"${summary['monto_total_prestado']:,.2f}",
-            "💰",
-            "#7c2d12",
+            "Total cobrado",
+            f"${summary['total_cobrado']:,.2f}",
+            "📥",
+            "#075985",
         )
     with col8:
         render_kpi_card(
@@ -1563,30 +1629,27 @@ def page_financiera():
             "#083344",
         )
     with col10:
+        # Intereses teóricos duplicados en esta sección como pediste
+        render_kpi_card(
+            "Intereses teóricos (otra vista)",
+            f"${summary['intereses_teoricos']:,.2f}",
+            "📈",
+            "#1e293b",
+        )
+
+    col11, col12 = st.columns(2)
+    with col11:
         render_kpi_card(
             "Gastos operativos",
             f"${summary['total_gastos_operativos']:,.2f}",
             "💸",
             "#7f1d1d",
         )
-
-    col11, col12 = st.columns(2)
-    with col11:
+    with col12:
         render_kpi_card(
             "Saldo total de la cuenta",
             f"${summary['saldo_total_cuenta']:,.2f}",
             "📊",
-            "#1e293b",
-        )
-    with col12:
-        ratio_cobrado = (
-            summary["total_cobrado"] / summary["total_a_cobrar"] * 100
-            if summary["total_a_cobrar"] > 0 else 0
-        )
-        render_kpi_card(
-            "Cobrado vs total a cobrar",
-            f"{ratio_cobrado:.1f}%",
-            "✅",
             "#0f172a",
         )
 
@@ -1606,14 +1669,26 @@ def page_financiera():
         f"</span>"
     )
 
+    ratio_cobrado = (
+        summary["total_cobrado"] / summary["total_a_cobrar"] * 100
+        if summary["total_a_cobrar"] > 0 else 0
+    )
+
     st.markdown("##### Indicador de utilidad (interés ganado)")
-    col13, = st.columns(1)
+    col13, col14 = st.columns(2)
     with col13:
         render_kpi_card(
             "Utilidad (interés teórico)",
             utilidad_value,
             "📌",
             "#0f172a",
+        )
+    with col14:
+        render_kpi_card(
+            "Cobrado vs total a cobrar",
+            f"{ratio_cobrado:.1f}%",
+            "✅",
+            "#111827",
         )
 
 
