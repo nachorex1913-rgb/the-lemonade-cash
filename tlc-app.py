@@ -188,6 +188,18 @@ def init_db():
         );
         """)
 
+        # Tabla de gastos operativos
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            expense_date TEXT,
+            amount REAL,
+            category TEXT,
+            notes TEXT,
+            created_at TEXT
+        );
+        """)
+
         # --------- Migraciones: asegurar columnas nuevas ---------
         cursor.execute("PRAGMA table_info(clients);")
         existing_client_cols = {row[1] for row in cursor.fetchall()}
@@ -259,15 +271,6 @@ def upsert_client(
 
         conn.commit()
         return client_id
-
-
-def get_client_by_id(client_id: int):
-    with get_connection() as conn:
-        return pd.read_sql_query(
-            "SELECT * FROM clients WHERE id = ?;",
-            conn,
-            params=(client_id,),
-        ).iloc[0]
 
 
 def count_loans_for_client(client_id: int) -> int:
@@ -441,6 +444,26 @@ def update_client_rating(client_id: int, rating: int):
         conn.commit()
 
 
+# ================== GASTOS OPERATIVOS ==================
+
+def insert_expense(expense_date: date, amount: float, category: str, notes: str):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO expenses (expense_date, amount, category, notes, created_at)
+            VALUES (?, ?, ?, ?, DATE('now'));
+        """, (expense_date.isoformat(), amount, category, notes))
+        conn.commit()
+
+
+def get_all_expenses():
+    with get_connection() as conn:
+        return pd.read_sql_query(
+            "SELECT * FROM expenses ORDER BY expense_date DESC, id DESC;",
+            conn
+        )
+
+
 # ================== RESUMEN FINANCIERO ==================
 
 def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
@@ -475,15 +498,23 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
         """)
         (total_pagado,) = cursor.fetchone()
 
+        # Gastos operativos
+        cursor.execute("""
+            SELECT COALESCE(SUM(amount), 0)
+            FROM expenses;
+        """)
+        (total_gastos,) = cursor.fetchone()
+
     monto_total_prestado = principal_sum
     total_a_cobrar = total_to_pay_sum
     total_cobrado = total_pagado
+    total_gastos_operativos = total_gastos
 
     intereses_teoricos = total_a_cobrar - monto_total_prestado
     monto_pendiente_por_recaudar = total_a_cobrar - total_cobrado
 
-    # Saldo en efectivo (caja)
-    saldo_efectivo = initial_capital - monto_total_prestado + total_cobrado
+    # Saldo en efectivo (caja) = capital inicial - prestado + cobrado - gastos
+    saldo_efectivo = initial_capital - monto_total_prestado + total_cobrado - total_gastos_operativos
 
     # Saldo total (caja + cartera por cobrar)
     saldo_total_cuenta = saldo_efectivo + monto_pendiente_por_recaudar
@@ -498,6 +529,7 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
         "monto_pendiente_por_recaudar": float(monto_pendiente_por_recaudar),
         "saldo_efectivo": float(saldo_efectivo),
         "saldo_total_cuenta": float(saldo_total_cuenta),
+        "total_gastos_operativos": float(total_gastos_operativos),
     }
 
 
@@ -594,17 +626,18 @@ def page_registro():
             weekly_payment = wizard_data["precal_weekly_payment"]
             first_due = date.fromisoformat(wizard_data["precal_first_due"])
 
-            st.success("Precalificación aprobada.")
-            st.info(
+            texto_precal = (
                 f"Monto solicitado: ${principal:,.2f}\n\n"
                 f"Total a pagar (50% interés): ${total_to_pay:,.2f}\n\n"
                 f"Plazo: 12 semanas\n\n"
                 f"Pago semanal estimado: ${weekly_payment:,.2f}\n\n"
                 f"Primer pago programado para el sábado: {first_due.strftime('%Y-%m-%d')}"
             )
+            st.success("Precalificación aprobada.")
+            st.info(texto_precal)
 
             # Botón para avanzar SOLO si el cliente acepta continuar
-            if st.button("Continuar al Paso 2 (cliente acepta continuar)"):
+            if st.button("Continuar al Paso 2 (cliente acepta continuar)", key="btn_to_step2"):
                 st.session_state["wizard_step"] = 2
                 st.rerun()
 
@@ -776,23 +809,23 @@ def page_registro():
             # ✅ Mensaje de confirmación + resumen en azul
             st.success("Cliente y crédito registrados correctamente.")
 
-            st.info(
+            texto_resumen = (
                 f"Crédito #{sequence} para este cliente\n\n"
-                f"Nombre: {full_name}\n"
-                f"Teléfono: {phone}\n\n"
+                f"Nombre: {full_name}   |   Teléfono: {phone}\n\n"
                 f"Monto prestado: ${principal:,.2f}\n"
                 f"Total a pagar (50% interés): ${total_to_pay:,.2f}\n"
                 f"Plazo: 12 semanas\n"
                 f"Pago semanal: ${weekly_payment:,.2f}\n"
                 f"Primer pago programado para el sábado: {first_due.strftime('%Y-%m-%d')}"
             )
+            st.info(texto_resumen)
 
             st.markdown(
                 f"[Ver / buscar documentos en Drive para {phone}]({docs_url})"
             )
 
-            # Botón para registrar otro crédito
-            if st.button("Registrar otro crédito"):
+            # Botón para registrar otro crédito → debe llevar al Paso 1
+            if st.button("Registrar otro crédito", key="btn_new_loan"):
                 st.session_state["wizard_step"] = 1
                 st.session_state["wizard_data"] = {}
                 st.rerun()
@@ -834,52 +867,6 @@ def page_creditos_activos():
         loans_df,
         use_container_width=True,
         hide_index=True,
-    )
-
-
-# ================== PÁGINA: DASHBOARD FINANCIERO ==================
-
-def page_financiera():
-    st.header("📊 Dashboard financiero - The Lemonade Cash")
-
-    summary = get_financial_summary(INITIAL_CAPITAL)
-
-    # Primer bloque: métricas principales
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Clientes registrados", summary["clientes_registrados"])
-        st.metric("Créditos activos", summary["creditos_activos"])
-    with col2:
-        st.metric("Créditos finalizados", summary["creditos_cerrados"])
-        st.metric("Monto total prestado", f"${summary['monto_total_prestado']:,.2f}")
-    with col3:
-        st.metric("Intereses teóricos ganados", f"${summary['intereses_teoricos']:,.2f}")
-        st.metric("Total cobrado (pagos)", f"${summary['total_cobrado']:,.2f}")
-
-    st.markdown("---")
-
-    # Segundo bloque: posición financiera
-    st.subheader("Posición financiera de la cuenta")
-
-    col4, col5, col6 = st.columns(3)
-    with col4:
-        st.metric("Saldo inicial", f"${INITIAL_CAPITAL:,.2f}")
-        st.metric("Monto pendiente por recaudar", f"${summary['monto_pendiente_por_recaudar']:,.2f}")
-    with col5:
-        st.metric("Saldo en efectivo (caja)", f"${summary['saldo_efectivo']:,.2f}")
-    with col6:
-        st.metric("Saldo total de la cuenta", f"${summary['saldo_total_cuenta']:,.2f}")
-
-    st.markdown(
-        """
-        **Leyenda rápida:**
-
-        - *Monto total prestado*: suma de todos los capitales entregados.  
-        - *Intereses teóricos ganados*: diferencia entre lo que deberías cobrar y lo que prestaste.  
-        - *Monto pendiente por recaudar*: total que aún no ha sido pagado por los clientes.  
-        - *Saldo en efectivo*: capital inicial menos lo que has prestado más todo lo que ya has cobrado.  
-        - *Saldo total de la cuenta*: efectivo + cartera pendiente (lo que falta por cobrar).
-        """
     )
 
 
@@ -951,7 +938,7 @@ def page_registrar_pago():
         help="Evalúa qué tan puntual y cumplido ha sido este cliente con sus pagos.",
     )
 
-    if st.button("Guardar calificación del cliente"):
+    if st.button("Guardar calificación del cliente", key="btn_save_rating"):
         update_client_rating(client_id, new_rating)
         st.success("Calificación del cliente actualizada.")
 
@@ -1073,6 +1060,80 @@ def page_calendario():
     st.dataframe(schedule_df, use_container_width=True, hide_index=True)
 
 
+# ================== PÁGINA: GASTOS OPERATIVOS ==================
+
+def page_gastos():
+    st.header("💸 Gastos operativos")
+
+    st.subheader("Registrar gasto operativo")
+
+    with st.form("form_gasto"):
+        expense_date = st.date_input("Fecha del gasto", value=date.today())
+        amount = st.number_input("Monto del gasto", min_value=0.0, step=10.0)
+        category = st.selectbox(
+            "Concepto",
+            ["Marketing", "Nómina", "Gasolina", "Premios", "Descuentos", "Otro"],
+        )
+        notes = st.text_input("Detalle / comentario (opcional)")
+
+        submitted = st.form_submit_button("Guardar gasto operativo")
+
+    if submitted:
+        if amount <= 0:
+            st.error("El monto del gasto debe ser mayor a 0.")
+        else:
+            insert_expense(expense_date, amount, category, notes)
+            st.success("Gasto operativo registrado correctamente.")
+
+    st.markdown("---")
+    st.subheader("Historial de gastos operativos")
+
+    expenses_df = get_all_expenses()
+    if expenses_df.empty:
+        st.info("No hay gastos operativos registrados.")
+    else:
+        st.dataframe(
+            expenses_df[["expense_date", "amount", "category", "notes"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# ================== PÁGINA: DASHBOARD FINANCIERO ==================
+
+def page_financiera():
+    st.header("📊 Dashboard financiero - The Lemonade Cash")
+
+    summary = get_financial_summary(INITIAL_CAPITAL)
+
+    # Primer bloque: métricas principales
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Clientes registrados", summary["clientes_registrados"])
+        st.metric("Créditos activos", summary["creditos_activos"])
+    with col2:
+        st.metric("Créditos finalizados", summary["creditos_cerrados"])
+        st.metric("Monto total prestado", f"${summary['monto_total_prestado']:,.2f}")
+    with col3:
+        st.metric("Intereses teóricos ganados", f"${summary['intereses_teoricos']:,.2f}")
+        st.metric("Total cobrado (pagos)", f"${summary['total_cobrado']:,.2f}")
+
+    st.markdown("---")
+
+    # Segundo bloque: posición financiera
+    st.subheader("Posición financiera de la cuenta")
+
+    col4, col5, col6 = st.columns(3)
+    with col4:
+        st.metric("Saldo inicial", f"${INITIAL_CAPITAL:,.2f}")
+        st.metric("Monto pendiente por recaudar", f"${summary['monto_pendiente_por_recaudar']:,.2f}")
+    with col5:
+        st.metric("Gastos operativos acumulados", f"${summary['total_gastos_operativos']:,.2f}")
+        st.metric("Saldo en efectivo (caja)", f"${summary['saldo_efectivo']:,.2f}")
+    with col6:
+        st.metric("Saldo total de la cuenta", f"${summary['saldo_total_cuenta']:,.2f}")
+
+
 # ================== MAIN ==================
 
 def main():
@@ -1091,10 +1152,11 @@ def main():
         "Registro",
         "Clientes",
         "Créditos activos",
-        "Financiera",
         "Registrar pago",
         "Historial",
         "Calendario de pagos",
+        "Gastos operativos",
+        "Financiera",
     ])
 
     with tabs[0]:
@@ -1104,13 +1166,15 @@ def main():
     with tabs[2]:
         page_creditos_activos()
     with tabs[3]:
-        page_financiera()
-    with tabs[4]:
         page_registrar_pago()
-    with tabs[5]:
+    with tabs[4]:
         page_historial()
-    with tabs[6]:
+    with tabs[5]:
         page_calendario()
+    with tabs[6]:
+        page_gastos()
+    with tabs[7]:
+        page_financiera()
 
 
 if __name__ == "__main__":
