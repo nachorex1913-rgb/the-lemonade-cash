@@ -804,7 +804,6 @@ def render_kpi_card(title, value, icon, bg_color):
 
 
 # ================== PÁGINAS: REGISTRO (WIZARD) ==================
-# (SIN CAMBIOS)
 
 def page_registro():
     st.subheader("Registro de crédito")
@@ -1456,6 +1455,60 @@ def page_financiera():
             f"${summary['monto_pendiente_por_recaudar']:,.2f}",
             "⌛",
             "#3b0764",
+        )
+
+    # ===== Actividad del mes (NUEVOS KPIs) =====
+    loans_df = get_loans_df()
+    today = date.today()
+    current_month = today.strftime("%Y-%m")
+
+    # Créditos y monto del mes
+    creditos_mes = 0
+    monto_prestado_mes = 0.0
+    pct_recurrentes = 0.0
+
+    if not loans_df.empty:
+        # Filtrar por mes actual en loan_date (formato YYYY-MM-DD)
+        loans_mes = loans_df[
+            loans_df["loan_date"].astype(str).str.startswith(current_month)
+        ]
+        creditos_mes = len(loans_mes)
+        monto_prestado_mes = float(loans_mes["principal"].sum()) if not loans_mes.empty else 0.0
+
+        # Clientes recurrentes (sequence > 1 en algún crédito)
+        # Calculamos por teléfono
+        loans_valid = loans_df[loans_df["phone"].astype(str) != ""]
+        if not loans_valid.empty:
+            counts = loans_valid.groupby("phone")["loan_id"].count()
+            total_clientes_con_credito = len(counts)
+            clientes_recurrentes = (counts > 1).sum()
+            if total_clientes_con_credito > 0:
+                pct_recurrentes = clientes_recurrentes / total_clientes_con_credito * 100.0
+
+    st.markdown("##### Actividad del mes")
+    col_am1, col_am2 = st.columns(2)
+    with col_am1:
+        render_kpi_card(
+            "Créditos otorgados este mes",
+            f"{creditos_mes}",
+            "🆕",
+            "#0f766e",
+        )
+    with col_am2:
+        render_kpi_card(
+            "Monto prestado este mes",
+            f"${monto_prestado_mes:,.2f}",
+            "💵",
+            "#115e59",
+        )
+
+    col_am3, = st.columns(1)
+    with col_am3:
+        render_kpi_card(
+            "Clientes recurrentes",
+            f"{pct_recurrentes:.1f}%",
+            "🔁",
+            "#1d3557",
         )
 
     # ===== Ingresos =====
