@@ -438,7 +438,8 @@ def update_client_rating(client_id: int, rating: int):
 # ================== PÁGINA: WIZARD DE REGISTRO ==================
 
 def page_wizard_registro():
-    st.header("🧩 Registro de crédito - Wizard por pasos")
+    # Título de la página de registro
+    st.header("Registro de crédito")
 
     # Estado del wizard
     if "wizard_step" not in st.session_state:
@@ -487,7 +488,7 @@ def page_wizard_registro():
                 value=wizard_data.get("loan_date", date.today()),
             )
 
-            submitted_precal = st.form_submit_button("Evaluar pre-calificación")
+            submitted_precal = st.form_submit_button("Guardar y continuar al Paso 2")
 
         if submitted_precal:
             if principal <= 0:
@@ -524,8 +525,9 @@ def page_wizard_registro():
                     f"Primer pago programado para el sábado: {first_due.strftime('%Y-%m-%d')}"
                 )
 
-                # Avanzar al paso 2
+                # Avanzar al paso 2 y recargar pantalla
                 st.session_state["wizard_step"] = 2
+                st.experimental_rerun()
 
     # ----- PASO 2: Registrar cliente -----
     elif step == 2:
@@ -570,6 +572,7 @@ def page_wizard_registro():
                 })
                 st.session_state["wizard_data"] = wizard_data
                 st.session_state["wizard_step"] = 3
+                st.experimental_rerun()
 
     # ----- PASO 3: Subir archivos (manual en Drive) y guardar -----
     elif step == 3:
@@ -609,6 +612,7 @@ def page_wizard_registro():
 
         if btn_volver:
             st.session_state["wizard_step"] = 2
+            st.experimental_rerun()
 
         if btn_guardar:
             if not docs_ok:
@@ -688,6 +692,7 @@ def page_wizard_registro():
             # Resetear wizard para el siguiente cliente
             st.session_state["wizard_step"] = 1
             st.session_state["wizard_data"] = {}
+            st.experimental_rerun()
 
 
 # ================== PÁGINA: CLIENTES (con rating) ==================
@@ -936,11 +941,17 @@ def page_calendario():
 # ================== MAIN ==================
 
 def main():
-    st.set_page_config(page_title="The Lemonade Cash", page_icon="🍋", layout="wide")
+    st.set_page_config(
+        page_title="Registro de crédito - The Lemonade Cash",
+        page_icon="🍋",
+        layout="wide",
+    )
+
     init_db()
 
-    st.title("🍋 The Lemonade Cash")
-    st.write("Control de préstamos semanales a 12 semanas con 50% de interés.")
+    # Título general de la app
+    st.title("Registro de crédito")
+    st.write("Estamos ahí")
 
     tabs = st.tabs([
         "Registro (wizard)",
