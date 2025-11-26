@@ -93,15 +93,15 @@ def append_loan_to_sheet(
 
 def save_uploaded_file_to_drive(uploaded_file, prefix):
     """
-    Stub actual: NO sube a Google Drive porque las Service Accounts
-    sin unidad compartida no tienen cuota de almacenamiento.
-
-    Mantiene la interfaz (no rompe la app) y devuelve None.
-    En el futuro, cuando uses una Unidad Compartida de Workspace,
-    aquí reactivamos el código de subida.
+    Stub silencioso: No sube a Google Drive por falta de cuota,
+    pero no muestra ningún mensaje al usuario.
     """
     if uploaded_file is None:
         return None
+
+    # Simplemente devolvemos None; en el futuro agregamos Drive Shared.
+    return None
+
 
     st.warning(
         "Nota: el archivo se recibió, pero no se está subiendo a Google Drive "
