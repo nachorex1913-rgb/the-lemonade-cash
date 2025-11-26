@@ -202,9 +202,10 @@ def get_clients_df():
         ) = row[:12]
 
         try:
-            rating_val = int(rating) if str(rating).strip() != "" else None
+            rating_val = parse_number(rating) if str(rating).strip() != "" else None
         except Exception:
             rating_val = None
+
 
         data.append(
             {
