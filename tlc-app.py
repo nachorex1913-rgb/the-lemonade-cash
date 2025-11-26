@@ -1518,12 +1518,22 @@ def page_gastos():
 
 # ================== PÁGINAS: DASHBOARD FINANCIERO ==================
 
+# ================== PÁGINAS: DASHBOARD FINANCIERO ==================
+
 def page_financiera():
     st.subheader("Dashboard financiero")
 
     summary = get_financial_summary(INITIAL_CAPITAL)
     pct_clients, has_clients_prev = get_clients_growth_pct()
     pct_portfolio, has_port_prev = get_portfolio_growth_pct()
+
+    # Etiquetas según haya o no histórico
+    label_clients = (
+        "vs mes anterior" if has_clients_prev else "Sin histórico (solo mes actual)"
+    )
+    label_portfolio = (
+        "crec. cartera vs mes anterior" if has_port_prev else "Sin histórico (solo mes actual)"
+    )
 
     st.markdown("##### Clientes y cartera")
     col1, col2 = st.columns(2)
@@ -1533,8 +1543,8 @@ def page_financiera():
             f"{summary['clientes_registrados']}",
             "👥",
             "#064e3b",
-            pct_clients if has_clients_prev else None,
-            "vs mes anterior",
+            pct_clients if has_clients_prev else 0.0,
+            label_clients,
         )
     with col2:
         render_kpi_card(
@@ -1558,8 +1568,8 @@ def page_financiera():
             f"${summary['monto_total_prestado']:,.2f}",
             "💰",
             "#7c2d12",
-            pct_portfolio if has_port_prev else None,
-            "crec. cartera vs mes anterior",
+            pct_portfolio if has_port_prev else 0.0,
+            label_portfolio,
         )
 
     st.markdown("##### Ingresos y pendientes")
