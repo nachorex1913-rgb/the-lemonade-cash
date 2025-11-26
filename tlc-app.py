@@ -318,19 +318,6 @@ def update_client_rating_sheet(phone: str, rating: int):
     update_row("Clientes", row_index, row)
 
 
-def find_client_by_phone(phone: str):
-    """
-    Devuelve un dict con los datos del cliente si existe en la hoja Clientes.
-    """
-    df = get_clients_df()
-    if df.empty:
-        return None
-    mask = df["phone"].astype(str) == str(phone)
-    if not mask.any():
-        return None
-    return df[mask].iloc[0].to_dict()
-
-
 # ================== PRÉSTAMOS EN SHEETS ==================
 
 @st.cache_data(ttl=60)
@@ -942,70 +929,26 @@ def page_registro():
                 safe_rerun()
             return
 
-        # Inicializar valores de los widgets si no existen
-        for field in ["full_name", "phone", "address", "emergency_name", "emergency_phone"]:
-            key = f"wiz_{field}"
-            if key not in st.session_state:
-                st.session_state[key] = wizard_data.get(field, "")
-
-        # ---- Autocompletar datos de cliente ya registrado ----
-        st.markdown("#### Autocompletar desde un cliente ya registrado (opcional)")
-        auto_phone = st.text_input(
-            "Teléfono del cliente ya registrado",
-            key="auto_existing_phone",
-            placeholder="Escribe el teléfono para buscar en la base de clientes",
-        )
-        if st.button("Cargar datos del cliente", use_container_width=True):
-            if not auto_phone:
-                st.warning("Escribe un teléfono para buscar.")
-            else:
-                try:
-                    cliente = find_client_by_phone(auto_phone)
-                    if cliente is None:
-                        st.warning("No se encontró un cliente con ese teléfono en la base de datos.")
-                    else:
-                        st.session_state["wiz_full_name"] = cliente.get("full_name", "")
-                        st.session_state["wiz_phone"] = cliente.get("phone", "")
-                        st.session_state["wiz_address"] = cliente.get("address", "")
-                        st.session_state["wiz_emergency_name"] = cliente.get("emergency_name", "")
-                        st.session_state["wiz_emergency_phone"] = cliente.get("emergency_phone", "")
-
-                        wizard_data.update({
-                            "full_name": st.session_state["wiz_full_name"],
-                            "phone": st.session_state["wiz_phone"],
-                            "address": st.session_state["wiz_address"],
-                            "emergency_name": st.session_state["wiz_emergency_name"],
-                            "emergency_phone": st.session_state["wiz_emergency_phone"],
-                        })
-                        st.session_state["wizard_data"] = wizard_data
-
-                        st.success("Datos del cliente cargados desde la base de clientes.")
-                except Exception as e:
-                    st.error("Ocurrió un error cargando el cliente.")
-                    st.exception(e)
-
-        st.markdown("---")
-
         with st.form("form_datos_cliente"):
             full_name = st.text_input(
                 "Nombre completo",
-                key="wiz_full_name",
+                value=wizard_data.get("full_name", ""),
             )
             phone = st.text_input(
                 "Teléfono (llave única)",
-                key="wiz_phone",
+                value=wizard_data.get("phone", ""),
             )
             address = st.text_area(
                 "Dirección",
-                key="wiz_address",
+                value=wizard_data.get("address", ""),
             )
             emergency_name = st.text_input(
                 "Nombre contacto de emergencia",
-                key="wiz_emergency_name",
+                value=wizard_data.get("emergency_name", ""),
             )
             emergency_phone = st.text_input(
                 "Teléfono contacto de emergencia",
-                key="wiz_emergency_phone",
+                value=wizard_data.get("emergency_phone", ""),
             )
 
             col_a, col_b = st.columns(2)
@@ -1157,9 +1100,6 @@ def page_registro():
             if st.button("Registrar otro crédito", key="btn_new_loan", use_container_width=True):
                 st.session_state["wizard_step"] = 1
                 st.session_state["wizard_data"] = {}
-                for key in list(st.session_state.keys()):
-                    if key.startswith("wiz_"):
-                        del st.session_state[key]
                 safe_rerun()
 
 
