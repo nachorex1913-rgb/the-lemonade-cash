@@ -788,7 +788,6 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
 # ================== UI HELPERS: TARJETAS KPI ==================
 
 def render_kpi_card(title, value, icon, bg_color):
-    # Versión simple: solo título, valor e ícono.
     card_html = f"""
     <div style="
         background:{bg_color};
@@ -919,7 +918,7 @@ def page_registro():
                 use_container_width=True,
             ):
                 st.session_state["wizard_step"] = 2
-                st.rerun()
+                st.experimental_rerun()
 
     # ----- PASO 2 -----
     elif step == 2:
@@ -929,10 +928,16 @@ def page_registro():
             st.warning("Primero completa la precalificación (Paso 1).")
             if st.button("Volver al Paso 1", use_container_width=True):
                 st.session_state["wizard_step"] = 1
-                st.rerun()
+                st.experimental_rerun()
             return
 
-        # ---- NUEVA SECCIÓN: Autocompletar datos de cliente ya registrado ----
+        # Inicializar valores de los widgets si no existen
+        for field in ["full_name", "phone", "address", "emergency_name", "emergency_phone"]:
+            key = f"wiz_{field}"
+            if key not in st.session_state:
+                st.session_state[key] = wizard_data.get(field, "")
+
+        # ---- Autocompletar datos de cliente ya registrado ----
         st.markdown("#### Autocompletar desde un cliente ya registrado (opcional)")
         auto_phone = st.text_input(
             "Teléfono del cliente ya registrado",
@@ -943,44 +948,52 @@ def page_registro():
             if not auto_phone:
                 st.warning("Escribe un teléfono para buscar.")
             else:
-                cliente = find_client_by_phone(auto_phone)
-                if cliente is None:
-                    st.warning("No se encontró un cliente con ese teléfono en la base de datos.")
-                else:
-                    # Actualizamos wizard_data con la info del cliente y recargamos
-                    wizard_data.update({
-                        "full_name": cliente.get("full_name", ""),
-                        "phone": cliente.get("phone", ""),
-                        "address": cliente.get("address", ""),
-                        "emergency_name": cliente.get("emergency_name", ""),
-                        "emergency_phone": cliente.get("emergency_phone", ""),
-                    })
-                    st.session_state["wizard_data"] = wizard_data
-                    st.success("Datos del cliente cargados desde la base de clientes.")
-                    st.rerun()
+                try:
+                    cliente = find_client_by_phone(auto_phone)
+                    if cliente is None:
+                        st.warning("No se encontró un cliente con ese teléfono en la base de datos.")
+                    else:
+                        st.session_state["wiz_full_name"] = cliente.get("full_name", "")
+                        st.session_state["wiz_phone"] = cliente.get("phone", "")
+                        st.session_state["wiz_address"] = cliente.get("address", "")
+                        st.session_state["wiz_emergency_name"] = cliente.get("emergency_name", "")
+                        st.session_state["wiz_emergency_phone"] = cliente.get("emergency_phone", "")
+
+                        wizard_data.update({
+                            "full_name": st.session_state["wiz_full_name"],
+                            "phone": st.session_state["wiz_phone"],
+                            "address": st.session_state["wiz_address"],
+                            "emergency_name": st.session_state["wiz_emergency_name"],
+                            "emergency_phone": st.session_state["wiz_emergency_phone"],
+                        })
+                        st.session_state["wizard_data"] = wizard_data
+
+                        st.success("Datos del cliente cargados desde la base de clientes.")
+                except Exception as e:
+                    st.error(f"Ocurrió un error cargando el cliente: {e}")
 
         st.markdown("---")
 
         with st.form("form_datos_cliente"):
             full_name = st.text_input(
                 "Nombre completo",
-                value=wizard_data.get("full_name", ""),
+                key="wiz_full_name",
             )
             phone = st.text_input(
                 "Teléfono (llave única)",
-                value=wizard_data.get("phone", ""),
+                key="wiz_phone",
             )
             address = st.text_area(
                 "Dirección",
-                value=wizard_data.get("address", ""),
+                key="wiz_address",
             )
             emergency_name = st.text_input(
                 "Nombre contacto de emergencia",
-                value=wizard_data.get("emergency_name", ""),
+                key="wiz_emergency_name",
             )
             emergency_phone = st.text_input(
                 "Teléfono contacto de emergencia",
-                value=wizard_data.get("emergency_phone", ""),
+                key="wiz_emergency_phone",
             )
 
             col_a, col_b = st.columns(2)
@@ -991,7 +1004,7 @@ def page_registro():
 
         if btn_volver:
             st.session_state["wizard_step"] = 1
-            st.rerun()
+            st.experimental_rerun()
 
         if btn_siguiente:
             if not phone:
@@ -1006,7 +1019,7 @@ def page_registro():
                 })
                 st.session_state["wizard_data"] = wizard_data
                 st.session_state["wizard_step"] = 3
-                st.rerun()
+                st.experimental_rerun()
 
     # ----- PASO 3 -----
     elif step == 3:
@@ -1016,7 +1029,7 @@ def page_registro():
             st.warning("Primero completa los datos del cliente (Paso 2).")
             if st.button("Volver al Paso 2", use_container_width=True):
                 st.session_state["wizard_step"] = 2
-                st.rerun()
+                st.experimental_rerun()
             return
 
         phone = wizard_data["phone"]
@@ -1064,7 +1077,7 @@ def page_registro():
 
         if btn_volver:
             st.session_state["wizard_step"] = 2
-            st.rerun()
+            st.experimental_rerun()
 
         if btn_guardar:
             if not docs_ok:
@@ -1132,7 +1145,10 @@ def page_registro():
             if st.button("Registrar otro crédito", key="btn_new_loan", use_container_width=True):
                 st.session_state["wizard_step"] = 1
                 st.session_state["wizard_data"] = {}
-                st.rerun()
+                for key in list(st.session_state.keys()):
+                    if key.startswith("wiz_"):
+                        del st.session_state[key]
+                st.experimental_rerun()
 
 
 # ================== PÁGINAS: CLIENTES ==================
@@ -1330,7 +1346,7 @@ def page_registrar_pago():
         append_payment(selected_loan_id, payment_date, amount, loan["phone"], loan["full_name"])
         update_loan_status_if_paid_sheet(selected_loan_id)
         st.success(f"Pago de ${amount:,.2f} registrado.")
-        st.rerun()
+        st.experimental_rerun()
 
 
 # ================== PÁGINAS: CALENDARIO ==================
