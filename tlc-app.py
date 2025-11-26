@@ -1,4 +1,4 @@
-import streamlit as st
+import streamlit as st 
 import pandas as pd
 from datetime import date, timedelta
 
@@ -768,45 +768,95 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
         "saldo_efectivo": float(saldo_efectivo),
         "saldo_total_cuenta": float(saldo_total_cuenta),
         "total_gastos_operativos": float(total_gastos_operativos),
+        "total_a_cobrar": float(total_a_cobrar),
     }
+
+
+# ===== NUEVO HELPER PARA CRECIMIENTOS MENSUALES ROBUSTOS =====
+
+def _monthly_growth_from_series(date_series, value_series):
+    """
+    Calcula crecimiento % mes vs mes anterior con fechas reales.
+
+    date_series: Serie de strings tipo fecha (YYYY-MM-DD)
+    value_series: Serie numérica (monto, conteo, etc.)
+    """
+    df = pd.DataFrame({"date": date_series, "value": value_series})
+
+    # Convertir a fecha real, ignorar basura
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"])
+    if df.empty:
+        return 0.0, False
+
+    # Agrupar por mes
+    df["month"] = df["date"].dt.to_period("M").astype(str)
+    grouped = (
+        df.groupby("month")["value"]
+        .sum()
+        .reset_index()
+        .sort_values("month")
+    )
+
+    # Ignorar meses con valor 0
+    grouped = grouped[grouped["value"] > 0]
+    if len(grouped) < 2:
+        return 0.0, False
+
+    last = float(grouped.iloc[-1]["value"])
+    prev = float(grouped.iloc[-2]["value"])
+
+    if prev <= 0:
+        return 0.0, False
+
+    pct = (last - prev) / prev * 100.0
+    return pct, True
 
 
 def get_clients_growth_pct():
     df = get_clients_df()
     if df.empty:
         return 0.0, False
-    df = df[df["created_at"] != ""]
+
+    # Filtrar solo clientes con created_at "usable"
+    mask = df["created_at"].astype(str).str.len() >= 8
+    df = df[mask]
     if df.empty:
         return 0.0, False
-    df["month"] = df["created_at"].str.slice(0, 7)
-    grouped = df.groupby("month")["phone"].nunique().reset_index(name="n")
-    if len(grouped) < 2:
-        return 0.0, False
-    last = float(grouped.iloc[-1]["n"])
-    prev = float(grouped.iloc[-2]["n"])
-    if prev == 0:
-        return 0.0, False
-    pct = (last - prev) / abs(prev) * 100.0
-    return pct, True
+
+    # Conteo de clientes únicos por día (luego se agrupa en el helper por mes)
+    daily = (
+        df.groupby("created_at")["phone"]
+        .nunique()
+        .reset_index(name="n")
+    )
+
+    return _monthly_growth_from_series(
+        daily["created_at"],
+        daily["n"],
+    )
 
 
 def get_portfolio_growth_pct():
     loans_df = get_loans_df()
     if loans_df.empty:
         return 0.0, False
-    loans_df = loans_df[loans_df["loan_date"] != ""]
+
+    mask = loans_df["loan_date"].astype(str).str.len() >= 8
+    loans_df = loans_df[mask]
     if loans_df.empty:
         return 0.0, False
-    loans_df["month"] = loans_df["loan_date"].str.slice(0, 7)
-    grouped = loans_df.groupby("month")["principal"].sum().reset_index(name="principal")
-    if len(grouped) < 2:
-        return 0.0, False
-    last = float(grouped.iloc[-1]["principal"])
-    prev = float(grouped.iloc[-2]["principal"])
-    if prev == 0:
-        return 0.0, False
-    pct = (last - prev) / abs(prev) * 100.0
-    return pct, True
+
+    daily = (
+        loans_df.groupby("loan_date")["principal"]
+        .sum()
+        .reset_index(name="principal")
+    )
+
+    return _monthly_growth_from_series(
+        daily["loan_date"],
+        daily["principal"],
+    )
 
 
 # ================== UI HELPERS: TARJETAS KPI ==================
@@ -1572,11 +1622,11 @@ def page_financiera():
         )
     with col12:
         ratio_cobrado = (
-            summary["total_cobrado"] / summary["monto_total_prestado"] * 100
-            if summary["monto_total_prestado"] > 0 else 0
+            summary["total_cobrado"] / summary["total_a_cobrar"] * 100
+            if summary["total_a_cobrar"] > 0 else 0
         )
         render_kpi_card(
-            "Cobrado vs prestado",
+            "Cobrado vs total a cobrar",
             f"{ratio_cobrado:.1f}%",
             "✅",
             "#0f172a",
