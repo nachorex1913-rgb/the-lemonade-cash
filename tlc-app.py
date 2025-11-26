@@ -20,7 +20,10 @@ SPREADSHEET_ID_FIXED = "1tk1rm8h4ETGnmM4DwTDKGmaVnoGx-Q6MOmEcBUr5pTc"
 DRIVE_SEARCH_BASE_URL = "https://drive.google.com/drive/u/0/search?q="
 
 # Carpeta fija donde tú subes las imágenes desde el cel
-DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/1Osdk52hINpP9c1syvGqIVGVYm4yJV0l-?usp=drive_link"
+DRIVE_FOLDER_URL = (
+    "https://drive.google.com/drive/folders/"
+    "1Osdk52hINpP9c1syvGqIVGVYm4yJV0l-?usp=drive_link"
+)
 
 # Saldo inicial de la cuenta
 INITIAL_CAPITAL = 1000.0
@@ -115,8 +118,7 @@ def get_first_due_date(loan_date: date) -> date:
     - Si está "muy cerca" (Jue, Vie, Sáb), el primer pago es el sábado de arriba (una semana después).
     """
     weekday = loan_date.weekday()  # lunes=0 ... domingo=6
-    # Próximo sábado de ESTA semana
-    days_to_this_saturday = (5 - weekday) % 7
+    days_to_this_saturday = (5 - weekday) % 7  # Próximo sábado de ESTA semana
 
     if days_to_this_saturday >= 3:
         # Hay margen suficiente → paga este sábado
@@ -514,7 +516,12 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
     monto_pendiente_por_recaudar = total_a_cobrar - total_cobrado
 
     # Saldo en efectivo (caja) = capital inicial - prestado + cobrado - gastos
-    saldo_efectivo = initial_capital - monto_total_prestado + total_cobrado - total_gastos_operativos
+    saldo_efectivo = (
+        initial_capital
+        - monto_total_prestado
+        + total_cobrado
+        - total_gastos_operativos
+    )
 
     # Saldo total (caja + cartera por cobrar)
     saldo_total_cuenta = saldo_efectivo + monto_pendiente_por_recaudar
@@ -533,11 +540,90 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
     }
 
 
+def get_monthly_profit():
+    """
+    Cálculo simplificado de utilidad mensual:
+    utilidad = pagos del mes - (capital prestado del mes) - gastos del mes
+    """
+    with get_connection() as conn:
+        loans_month = pd.read_sql_query(
+            """
+            SELECT strftime('%Y-%m', loan_date) AS month,
+                   SUM(principal) AS principal
+            FROM loans
+            GROUP BY month;
+            """,
+            conn,
+        )
+
+        pays_month = pd.read_sql_query(
+            """
+            SELECT strftime('%Y-%m', payment_date) AS month,
+                   SUM(amount) AS payments
+            FROM payments
+            GROUP BY month;
+            """,
+            conn,
+        )
+
+        exp_month = pd.read_sql_query(
+            """
+            SELECT strftime('%Y-%m', expense_date) AS month,
+                   SUM(amount) AS expenses
+            FROM expenses
+            GROUP BY month;
+            """,
+            conn,
+        )
+
+    months = set()
+    for df in [loans_month, pays_month, exp_month]:
+        if not df.empty:
+            months.update(df["month"].tolist())
+
+    if not months:
+        return pd.DataFrame(columns=["month", "principal", "payments", "expenses", "profit", "growth_pct"])
+
+    months = sorted(months)
+    rows = []
+    last_profit = None
+
+    for m in months:
+        principal = float(
+            loans_month.loc[loans_month["month"] == m, "principal"].sum()
+        )
+        payments = float(
+            pays_month.loc[pays_month["month"] == m, "payments"].sum()
+        )
+        expenses = float(
+            exp_month.loc[exp_month["month"] == m, "expenses"].sum()
+        )
+        profit = payments - principal - expenses
+
+        if last_profit is None or last_profit == 0:
+            growth_pct = 0.0
+        else:
+            growth_pct = (profit - last_profit) / abs(last_profit) * 100.0
+
+        last_profit = profit
+        rows.append(
+            {
+                "month": m,
+                "principal": principal,
+                "payments": payments,
+                "expenses": expenses,
+                "profit": profit,
+                "growth_pct": growth_pct,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
 # ================== PÁGINA: REGISTRO (por pasos) ==================
 
 def page_registro():
-    # Título dentro de la pestaña
-    st.header("Registro")
+    st.subheader("Registro de crédito")
 
     # Estado del wizard
     if "wizard_step" not in st.session_state:
@@ -554,7 +640,7 @@ def page_registro():
 
     # ----- PASO 1: Precalificación -----
     if step == 1:
-        st.subheader("Paso 1: Precalificación")
+        st.markdown("### Paso 1: Precalificación")
 
         with st.form("form_precal"):
             principal = st.number_input(
@@ -586,7 +672,6 @@ def page_registro():
                 value=wizard_data.get("loan_date", date.today()),
             )
 
-            # Botón: Ver precalificación
             submitted_precal = st.form_submit_button("Ver precalificación")
 
         if submitted_precal:
@@ -598,7 +683,6 @@ def page_registro():
                     "Revisa las respuestas del check."
                 )
             else:
-                # Guardamos en el wizard
                 interest_rate = 0.5
                 weeks = 12
                 total_to_pay = principal * (1 + interest_rate)
@@ -619,7 +703,6 @@ def page_registro():
                 })
                 st.session_state["wizard_data"] = wizard_data
 
-        # Si ya hay precalificación válida, mostramos resumen y botón para seguir
         if wizard_data.get("precal_ok"):
             principal = wizard_data["principal"]
             total_to_pay = wizard_data["precal_total_to_pay"]
@@ -629,38 +712,52 @@ def page_registro():
             texto_precal = (
                 f"Monto solicitado: ${principal:,.2f}\n\n"
                 f"Total a pagar (50% interés): ${total_to_pay:,.2f}\n\n"
-                f"Plazo: 12 semanas\n\n"
+                "Plazo: 12 semanas\n\n"
                 f"Pago semanal estimado: ${weekly_payment:,.2f}\n\n"
                 f"Primer pago programado para el sábado: {first_due.strftime('%Y-%m-%d')}"
             )
             st.success("Precalificación aprobada.")
             st.info(texto_precal)
 
-            # Botón para avanzar SOLO si el cliente acepta continuar
-            if st.button("Continuar al Paso 2 (cliente acepta continuar)", key="btn_to_step2"):
+            if st.button(
+                "Continuar al Paso 2 (cliente acepta continuar)",
+                key="btn_to_step2",
+                use_container_width=True,
+            ):
                 st.session_state["wizard_step"] = 2
                 st.rerun()
 
     # ----- PASO 2: Registrar cliente -----
     elif step == 2:
-        st.subheader("Paso 2: Datos del cliente")
+        st.markdown("### Paso 2: Datos del cliente")
 
         if not wizard_data.get("precal_ok"):
             st.warning("Primero completa la precalificación (Paso 1).")
-            if st.button("Volver al Paso 1"):
+            if st.button("Volver al Paso 1", use_container_width=True):
                 st.session_state["wizard_step"] = 1
                 st.rerun()
             return
 
         with st.form("form_datos_cliente"):
-            full_name = st.text_input("Nombre completo", value=wizard_data.get("full_name", ""))
-            phone = st.text_input("Teléfono (llave única)", value=wizard_data.get("phone", ""))
-            address = st.text_area("Dirección", value=wizard_data.get("address", ""))
+            full_name = st.text_input(
+                "Nombre completo",
+                value=wizard_data.get("full_name", ""),
+            )
+            phone = st.text_input(
+                "Teléfono (llave única)",
+                value=wizard_data.get("phone", ""),
+            )
+            address = st.text_area(
+                "Dirección",
+                value=wizard_data.get("address", ""),
+            )
             emergency_name = st.text_input(
-                "Nombre contacto de emergencia", value=wizard_data.get("emergency_name", "")
+                "Nombre contacto de emergencia",
+                value=wizard_data.get("emergency_name", ""),
             )
             emergency_phone = st.text_input(
-                "Teléfono contacto de emergencia", value=wizard_data.get("emergency_phone", "")
+                "Teléfono contacto de emergencia",
+                value=wizard_data.get("emergency_phone", ""),
             )
 
             col_a, col_b = st.columns(2)
@@ -690,11 +787,11 @@ def page_registro():
 
     # ----- PASO 3: Subir archivos (manual en Drive) y guardar -----
     elif step == 3:
-        st.subheader("Paso 3: Subida de archivos y confirmación")
+        st.markdown("### Paso 3: Subida de archivos y confirmación")
 
         if "phone" not in wizard_data:
             st.warning("Primero completa los datos del cliente (Paso 2).")
-            if st.button("Volver al Paso 2"):
+            if st.button("Volver al Paso 2", use_container_width=True):
                 st.session_state["wizard_step"] = 2
                 st.rerun()
             return
@@ -702,18 +799,19 @@ def page_registro():
         phone = wizard_data["phone"]
         docs_url = f"{DRIVE_SEARCH_BASE_URL}{phone}"
 
-        st.markdown("### Instrucciones para documentos")
-        st.markdown(
-            """
-            Sube los documentos (ID, bill o comprobante de domicilio, etc.) directamente en tu Google Drive.
-            """
+        st.markdown("#### Instrucciones para documentos")
+        st.write(
+            "Sube los documentos (ID, bill o comprobante de domicilio, etc.) "
+            "directamente en tu Google Drive."
         )
 
         # Botón que abre la carpeta fija de Drive
         st.markdown(
             f"""
             <a href="{DRIVE_FOLDER_URL}" target="_blank">
-                <button style="padding:8px 16px; border-radius:4px; border:none; background-color:#0f62fe; color:white; cursor:pointer;">
+                <button style="padding:12px 16px; border-radius:8px; border:none;
+                               background-color:#0f9d58; color:white; cursor:pointer;
+                               width:100%; font-weight:600;">
                     Cargar imágenes en carpeta de Drive
                 </button>
             </a>
@@ -723,7 +821,8 @@ def page_registro():
 
         st.markdown(
             f"""
-            Además, puedes usar este enlace para buscar rápidamente los documentos de este cliente por teléfono en Drive:
+            También puedes usar este enlace para buscar rápidamente los documentos
+            de este cliente por teléfono en Drive:
 
             👉 [Buscar documentos en Drive para {phone}]({docs_url})
             """
@@ -811,10 +910,10 @@ def page_registro():
 
             texto_resumen = (
                 f"Crédito #{sequence} para este cliente\n\n"
-                f"Nombre: {full_name}   |   Teléfono: {phone}\n\n"
+                f"Nombre: {full_name} | Teléfono: {phone}\n\n"
                 f"Monto prestado: ${principal:,.2f}\n"
                 f"Total a pagar (50% interés): ${total_to_pay:,.2f}\n"
-                f"Plazo: 12 semanas\n"
+                "Plazo: 12 semanas\n"
                 f"Pago semanal: ${weekly_payment:,.2f}\n"
                 f"Primer pago programado para el sábado: {first_due.strftime('%Y-%m-%d')}"
             )
@@ -824,8 +923,7 @@ def page_registro():
                 f"[Ver / buscar documentos en Drive para {phone}]({docs_url})"
             )
 
-            # Botón para registrar otro crédito → debe llevar al Paso 1
-            if st.button("Registrar otro crédito", key="btn_new_loan"):
+            if st.button("Registrar otro crédito", key="btn_new_loan", use_container_width=True):
                 st.session_state["wizard_step"] = 1
                 st.session_state["wizard_data"] = {}
                 st.rerun()
@@ -834,14 +932,13 @@ def page_registro():
 # ================== PÁGINA: CLIENTES (solo vista) ==================
 
 def page_clientes():
-    st.header("👤 Base de clientes - The Lemonade Cash")
+    st.subheader("Base de clientes")
 
     clients_df = get_all_clients()
     if clients_df.empty:
         st.info("No hay clientes registrados.")
         return
 
-    st.subheader("Listado de clientes")
     cols_to_show = ["id", "full_name", "phone", "address"]
     if "rating" in clients_df.columns:
         cols_to_show.append("rating")
@@ -856,7 +953,7 @@ def page_clientes():
 # ================== PÁGINA: CRÉDITOS ACTIVOS ==================
 
 def page_creditos_activos():
-    st.header("💳 Créditos activos")
+    st.subheader("Créditos activos")
 
     loans_df = get_all_loans_with_clients(status_filter="activo")
     if loans_df.empty:
@@ -873,7 +970,7 @@ def page_creditos_activos():
 # ================== PÁGINA: REGISTRAR PAGO (con rating) ==================
 
 def page_registrar_pago():
-    st.header("✅ Registrar pago semanal - The Lemonade Cash")
+    st.subheader("Registrar pago semanal")
 
     search_text = st.text_input(
         "Buscar cliente por nombre o teléfono:",
@@ -888,7 +985,7 @@ def page_registrar_pago():
         st.warning("No se encontraron créditos para ese criterio.")
         return
 
-    st.subheader("Resultados")
+    st.markdown("#### Créditos encontrados")
     st.dataframe(loans_df, use_container_width=True, hide_index=True)
 
     loan_ids = loans_df["loan_id"].tolist()
@@ -926,7 +1023,7 @@ def page_registrar_pago():
 
     # Calificación del cliente (basada en puntualidad y pagos)
     st.markdown("---")
-    st.subheader("Calificación del cliente (puntualidad y pagos completos)")
+    st.subheader("Calificación del cliente")
 
     client_id = int(loan["client_id"])
     current_rating = loan["rating"] if pd.notna(loan["rating"]) else 3
@@ -977,7 +1074,7 @@ def page_registrar_pago():
 # ================== PÁGINA: HISTORIAL (CERRADOS) ==================
 
 def page_historial():
-    st.header("📜 Historial de créditos (cerrados)")
+    st.subheader("Historial de créditos (cerrados)")
 
     loans_df = get_all_loans_with_clients(status_filter="cerrado")
     if loans_df.empty:
@@ -994,7 +1091,7 @@ def page_historial():
 # ================== PÁGINA: CALENDARIO DE PAGOS ==================
 
 def page_calendario():
-    st.header("📆 Calendario de pagos (por crédito)")
+    st.subheader("Calendario de pagos")
 
     search_text = st.text_input(
         "Buscar cliente por nombre o teléfono:",
@@ -1009,7 +1106,7 @@ def page_calendario():
         st.warning("No se encontraron créditos para ese criterio.")
         return
 
-    st.subheader("Créditos encontrados")
+    st.markdown("#### Créditos encontrados")
     st.dataframe(loans_df, use_container_width=True, hide_index=True)
 
     loan_ids = loans_df["loan_id"].tolist()
@@ -1056,16 +1153,22 @@ def page_calendario():
         })
 
     schedule_df = pd.DataFrame(schedule)
+
+    def highlight_row(row):
+        if row["Estado"] == "Pagado":
+            return ["background-color: #2e7d32; color: white;"] * len(row)
+        return [""] * len(row)
+
+    styled = schedule_df.style.apply(highlight_row, axis=1)
+
     st.subheader("Calendario de pagos programados")
-    st.dataframe(schedule_df, use_container_width=True, hide_index=True)
+    st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
 # ================== PÁGINA: GASTOS OPERATIVOS ==================
 
 def page_gastos():
-    st.header("💸 Gastos operativos")
-
-    st.subheader("Registrar gasto operativo")
+    st.subheader("Gastos operativos")
 
     with st.form("form_gasto"):
         expense_date = st.date_input("Fecha del gasto", value=date.today())
@@ -1086,7 +1189,7 @@ def page_gastos():
             st.success("Gasto operativo registrado correctamente.")
 
     st.markdown("---")
-    st.subheader("Historial de gastos operativos")
+    st.markdown("#### Historial de gastos operativos")
 
     expenses_df = get_all_expenses()
     if expenses_df.empty:
@@ -1102,39 +1205,57 @@ def page_gastos():
 # ================== PÁGINA: DASHBOARD FINANCIERO ==================
 
 def page_financiera():
-    st.header("📊 Dashboard financiero - The Lemonade Cash")
+    st.subheader("Dashboard financiero")
 
     summary = get_financial_summary(INITIAL_CAPITAL)
 
-    # Primer bloque: métricas principales
-    col1, col2, col3 = st.columns(3)
+    # Métricas principales (en tarjetas tipo móvil)
+    col1, col2 = st.columns(2)
     with col1:
         st.metric("Clientes registrados", summary["clientes_registrados"])
         st.metric("Créditos activos", summary["creditos_activos"])
-    with col2:
         st.metric("Créditos finalizados", summary["creditos_cerrados"])
+    with col2:
         st.metric("Monto total prestado", f"${summary['monto_total_prestado']:,.2f}")
-    with col3:
-        st.metric("Intereses teóricos ganados", f"${summary['intereses_teoricos']:,.2f}")
-        st.metric("Total cobrado (pagos)", f"${summary['total_cobrado']:,.2f}")
+        st.metric("Intereses teóricos", f"${summary['intereses_teoricos']:,.2f}")
+        st.metric("Total cobrado", f"${summary['total_cobrado']:,.2f}")
 
     st.markdown("---")
 
-    # Segundo bloque: posición financiera
-    st.subheader("Posición financiera de la cuenta")
+    # Posición financiera
+    st.markdown("#### Posición financiera de la cuenta")
 
-    col4, col5, col6 = st.columns(3)
-    with col4:
+    col3, col4 = st.columns(2)
+    with col3:
         st.metric("Saldo inicial", f"${INITIAL_CAPITAL:,.2f}")
         st.metric("Monto pendiente por recaudar", f"${summary['monto_pendiente_por_recaudar']:,.2f}")
-    with col5:
+    with col4:
         st.metric("Gastos operativos acumulados", f"${summary['total_gastos_operativos']:,.2f}")
         st.metric("Saldo en efectivo (caja)", f"${summary['saldo_efectivo']:,.2f}")
-    with col6:
         st.metric("Saldo total de la cuenta", f"${summary['saldo_total_cuenta']:,.2f}")
 
+    st.markdown("---")
 
-# ================== MAIN ==================
+    # Gráficas de utilidad y crecimiento
+    monthly_df = get_monthly_profit()
+    if monthly_df.empty:
+        st.info("Aún no hay suficiente información para mostrar gráficas mensuales.")
+        return
+
+    st.markdown("#### Utilidad mensual")
+    st.bar_chart(
+        data=monthly_df.set_index("month")["profit"],
+        height=250,
+    )
+
+    st.markdown("#### Crecimiento porcentual de utilidad mensual")
+    st.line_chart(
+        data=monthly_df.set_index("month")["growth_pct"],
+        height=250,
+    )
+
+
+# ================== MAIN (HOME CON TARJETAS MÓVILES) ==================
 
 def main():
     st.set_page_config(
@@ -1145,36 +1266,68 @@ def main():
 
     init_db()
 
-    st.title("🍋 The Lemonade Cash")
-    st.write("Estamos ahí")
+    # Título centrado (como en tu diseño)
+    st.markdown(
+        """
+        <h1 style="text-align:center; margin-bottom: 0;">🍋 The Lemonade Cash</h1>
+        <p style="text-align:center; margin-top: 0; color:#999;">Estamos ahí</p>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    tabs = st.tabs([
-        "Registro",
-        "Clientes",
-        "Créditos activos",
-        "Registrar pago",
-        "Historial",
-        "Calendario de pagos",
-        "Gastos operativos",
-        "Financiera",
-    ])
+    # Menú principal por tarjetas
+    if "main_section" not in st.session_state:
+        st.session_state["main_section"] = "clientes"
 
-    with tabs[0]:
-        page_registro()
-    with tabs[1]:
-        page_clientes()
-    with tabs[2]:
-        page_creditos_activos()
-    with tabs[3]:
-        page_registrar_pago()
-    with tabs[4]:
-        page_historial()
-    with tabs[5]:
-        page_calendario()
-    with tabs[6]:
-        page_gastos()
-    with tabs[7]:
-        page_financiera()
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("👥\nClientes", use_container_width=True):
+            st.session_state["main_section"] = "clientes"
+    with col2:
+        if st.button("💳\nCréditos", use_container_width=True):
+            st.session_state["main_section"] = "creditos"
+
+    col3, col4 = st.columns(2)
+    with col3:
+        if st.button("💸\nGastos", use_container_width=True):
+            st.session_state["main_section"] = "gastos"
+    with col4:
+        if st.button("📊\nDashboard", use_container_width=True):
+            st.session_state["main_section"] = "dashboard"
+
+    st.markdown("---")
+
+    section = st.session_state["main_section"]
+
+    # Subpestañas dentro de cada tarjeta
+    if section == "clientes":
+        tabs = st.tabs(["Registro", "Clientes", "Registrar pago"])
+        with tabs[0]:
+            page_registro()
+        with tabs[1]:
+            page_clientes()
+        with tabs[2]:
+            page_registrar_pago()
+
+    elif section == "creditos":
+        tabs = st.tabs(["Créditos activos", "Historial", "Calendario de pagos"])
+        with tabs[0]:
+            page_creditos_activos()
+        with tabs[1]:
+            page_historial()
+        with tabs[2]:
+            page_calendario()
+
+    elif section == "gastos":
+        tabs = st.tabs(["Gastos operativos"])
+        with tabs[0]:
+            page_gastos()
+
+    elif section == "dashboard":
+        tabs = st.tabs(["Finanzas"])
+        with tabs[0]:
+            page_financiera()
 
 
 if __name__ == "__main__":
