@@ -775,7 +775,7 @@ def get_financial_summary(initial_capital: float = INITIAL_CAPITAL):
 # ================== UI HELPERS: TARJETAS KPI ==================
 
 def render_kpi_card(title, value, icon, bg_color):
-    # Versión simple: solo título, valor e ícono. SIN porcentajes ni texto adicional.
+    # Versión simple: solo título, valor e ícono.
     card_html = f"""
     <div style="
         background:{bg_color};
@@ -804,6 +804,7 @@ def render_kpi_card(title, value, icon, bg_color):
 
 
 # ================== PÁGINAS: REGISTRO (WIZARD) ==================
+# (SIN CAMBIOS)
 
 def page_registro():
     st.subheader("Registro de crédito")
@@ -1423,7 +1424,7 @@ def page_financiera():
 
     summary = get_financial_summary(INITIAL_CAPITAL)
 
-    # Mismo layout de antes: solo tarjetas, sin porcentajes debajo del número
+    # ===== Clientes y cartera =====
     st.markdown("##### Clientes y cartera")
     col1, col2 = st.columns(2)
     with col1:
@@ -1451,13 +1452,14 @@ def page_financiera():
         )
     with col4:
         render_kpi_card(
-            "Cartera prestada",
-            f"${summary['monto_total_prestado']:,.2f}",
-            "💰",
-            "#7c2d12",
+            "Pendiente por recaudar",
+            f"${summary['monto_pendiente_por_recaudar']:,.2f}",
+            "⌛",
+            "#3b0764",
         )
 
-    st.markdown("##### Ingresos y pendientes")
+    # ===== Ingresos =====
+    st.markdown("##### Ingresos")
     col5, col6 = st.columns(2)
     with col5:
         render_kpi_card(
@@ -1477,19 +1479,20 @@ def page_financiera():
     col7, col8 = st.columns(2)
     with col7:
         render_kpi_card(
-            "Pendiente por recaudar",
-            f"${summary['monto_pendiente_por_recaudar']:,.2f}",
-            "⌛",
-            "#3b0764",
+            "Cartera prestada",
+            f"${summary['monto_total_prestado']:,.2f}",
+            "💰",
+            "#7c2d12",
         )
     with col8:
         render_kpi_card(
-            "Gastos operativos",
-            f"${summary['total_gastos_operativos']:,.2f}",
-            "💸",
-            "#7f1d1d",
+            "Saldo en efectivo (caja)",
+            f"${summary['saldo_efectivo']:,.2f}",
+            "🧾",
+            "#14532d",
         )
 
+    # ===== Posición financiera =====
     st.markdown("##### Posición financiera")
     col9, col10 = st.columns(2)
     with col9:
@@ -1501,10 +1504,10 @@ def page_financiera():
         )
     with col10:
         render_kpi_card(
-            "Saldo en efectivo (caja)",
-            f"${summary['saldo_efectivo']:,.2f}",
-            "🧾",
-            "#14532d",
+            "Gastos operativos",
+            f"${summary['total_gastos_operativos']:,.2f}",
+            "💸",
+            "#7f1d1d",
         )
 
     col11, col12 = st.columns(2)
@@ -1524,6 +1527,32 @@ def page_financiera():
             "Cobrado vs total a cobrar",
             f"{ratio_cobrado:.1f}%",
             "✅",
+            "#0f172a",
+        )
+
+    # ===== Indicador de utilidad =====
+    utilidad = summary["intereses_teoricos"]  # usando intereses_teoricos como utilidad
+    pct_capital = (utilidad / INITIAL_CAPITAL * 100) if INITIAL_CAPITAL > 0 else 0
+    pct_saldo_final = (
+        utilidad / summary["saldo_total_cuenta"] * 100
+        if summary["saldo_total_cuenta"] > 0 else 0
+    )
+
+    utilidad_value = (
+        f"${utilidad:,.2f}<br>"
+        f"<span style='font-size:0.7rem; color:#cfd8e3;'>"
+        f"{pct_capital:.1f}% vs capital inicial · "
+        f"{pct_saldo_final:.1f}% vs saldo final de la cuenta"
+        f"</span>"
+    )
+
+    st.markdown("##### Indicador de utilidad (interés ganado)")
+    col13, = st.columns(1)
+    with col13:
+        render_kpi_card(
+            "Utilidad (interés teórico)",
+            utilidad_value,
+            "📌",
             "#0f172a",
         )
 
