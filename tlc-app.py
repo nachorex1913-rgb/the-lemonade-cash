@@ -438,7 +438,7 @@ def update_client_rating(client_id: int, rating: int):
 # ================== PÁGINA: WIZARD DE REGISTRO ==================
 
 def page_wizard_registro():
-    # Título de la página de registro
+    # Título dentro de la pestaña
     st.header("Registro de crédito")
 
     # Estado del wizard
@@ -527,7 +527,7 @@ def page_wizard_registro():
 
                 # Avanzar al paso 2 y recargar pantalla
                 st.session_state["wizard_step"] = 2
-                st.experimental_rerun()
+                st.rerun()
 
     # ----- PASO 2: Registrar cliente -----
     elif step == 2:
@@ -537,6 +537,7 @@ def page_wizard_registro():
             st.warning("Primero completa la precalificación (Paso 1).")
             if st.button("Volver al Paso 1"):
                 st.session_state["wizard_step"] = 1
+                st.rerun()
             return
 
         with st.form("form_datos_cliente"):
@@ -558,6 +559,7 @@ def page_wizard_registro():
 
         if btn_volver:
             st.session_state["wizard_step"] = 1
+            st.rerun()
 
         if btn_siguiente:
             if not phone:
@@ -572,7 +574,7 @@ def page_wizard_registro():
                 })
                 st.session_state["wizard_data"] = wizard_data
                 st.session_state["wizard_step"] = 3
-                st.experimental_rerun()
+                st.rerun()
 
     # ----- PASO 3: Subir archivos (manual en Drive) y guardar -----
     elif step == 3:
@@ -582,6 +584,7 @@ def page_wizard_registro():
             st.warning("Primero completa los datos del cliente (Paso 2).")
             if st.button("Volver al Paso 2"):
                 st.session_state["wizard_step"] = 2
+                st.rerun()
             return
 
         phone = wizard_data["phone"]
@@ -612,7 +615,7 @@ def page_wizard_registro():
 
         if btn_volver:
             st.session_state["wizard_step"] = 2
-            st.experimental_rerun()
+            st.rerun()
 
         if btn_guardar:
             if not docs_ok:
@@ -692,7 +695,7 @@ def page_wizard_registro():
             # Resetear wizard para el siguiente cliente
             st.session_state["wizard_step"] = 1
             st.session_state["wizard_data"] = {}
-            st.experimental_rerun()
+            st.rerun()
 
 
 # ================== PÁGINA: CLIENTES (con rating) ==================
@@ -767,7 +770,6 @@ def page_creditos_activos():
 def page_registrar_pago():
     st.header("✅ Registrar pago semanal - The Lemonade Cash")
 
-    # 🔑 key distinto para este text_input
     search_text = st.text_input(
         "Buscar cliente por nombre o teléfono:",
         key="search_pago"
@@ -848,7 +850,7 @@ def page_registrar_pago():
             return
         insert_payment(selected_loan_id, payment_date, amount)
         st.success(f"Pago de ${amount:,.2f} registrado.")
-        st.experimental_rerun()
+        st.rerun()
 
 
 # ================== PÁGINA: HISTORIAL (CERRADOS) ==================
@@ -873,7 +875,6 @@ def page_historial():
 def page_calendario():
     st.header("📆 Calendario de pagos (por crédito)")
 
-    # 🔑 key distinto para este text_input
     search_text = st.text_input(
         "Buscar cliente por nombre o teléfono:",
         key="search_calendario"
@@ -942,15 +943,14 @@ def page_calendario():
 
 def main():
     st.set_page_config(
-        page_title="Registro de crédito - The Lemonade Cash",
+        page_title="The Lemonade Cash",
         page_icon="🍋",
         layout="wide",
     )
 
     init_db()
 
-    # Título general de la app
-    st.title("Registro de crédito")
+    st.title("🍋 The Lemonade Cash")
     st.write("Estamos ahí")
 
     tabs = st.tabs([
